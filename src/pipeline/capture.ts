@@ -247,8 +247,7 @@ async function ensureBrowser(poolSize: number): Promise<BrowserState> {
         const waiter = waiters.shift();
         if (waiter) {
           // Give the slot to the next waiter (will be refreshed on the next acquire).
-          // eslint-disable-next-line @typescript-eslint/no-floating-promises
-          refreshIfNeeded(slot, browser).then(waiter);
+          void refreshIfNeeded(slot, browser).then(waiter);
         } else {
           free.push(slot);
         }

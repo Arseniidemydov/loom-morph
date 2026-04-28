@@ -215,7 +215,10 @@ function renderFilename(batch: BatchInput, lead: LeadRecord): string {
   if (!template) return fallback;
   let resolved = template;
   let missing = false;
-  resolved = resolved.replace(/\{(\w+)\}/g, (_match, key: string) => {
+  // `[^}]+` (vs `\w+`) so tokens can include spaces — real-world CSV headers
+  // like "Company Name" need this.
+  resolved = resolved.replace(/\{([^}]+)\}/g, (_match, raw: string) => {
+    const key = raw.trim();
     if (key === 'i') return String(lead.rowIndex + 1);
     const value = lead.csvData[key];
     if (value === undefined || value === '') {

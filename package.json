@@ -12,6 +12,7 @@
     "test": "vitest run",
     "generate-mask": "tsc -p scripts/tsconfig.json && node scripts/.dist/generate-mask.js",
     "spike": "tsx src/cli/spike.ts",
+    "batch": "tsx src/cli/run.ts",
     "stage:test-assets": "tsx scripts/stage-test-assets.ts"
   },
   "dependencies": {
