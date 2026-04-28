@@ -12,7 +12,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 // Skip if either ffmpeg or chromium is missing; the spike chains both.
 function chromiumInstalled(): boolean {
-  const r = spawnSync('node', ['-e', "console.log(require('playwright').chromium.executablePath())"], {
+  const r = spawnSync('node', ['-e', "import('playwright').then((m)=>console.log(m.chromium.executablePath()))"], {
     encoding: 'utf8',
     cwd: REPO_ROOT,
   });

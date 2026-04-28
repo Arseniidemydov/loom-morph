@@ -15,8 +15,6 @@ import { injectionCss } from './cookie-selectors';
 const VIEWPORT = { width: 1280, height: 800 } as const;
 const GOTO_TIMEOUT_MS = 30_000;
 const SETTLE_MS = 1_000;
-const SCROLL_STEP_DELAY_MS = 100;
-const SCROLL_STEP_PX = 800;
 const MAX_SCREENSHOT_HEIGHT = 16_000;
 const DEFAULT_CONTEXT_POOL_SIZE = 6;
 const CONTEXT_RECYCLE_AFTER_JOBS = 20;
@@ -190,25 +188,38 @@ async function autoScroll(page: Page): Promise<void> {
   // wraps named/const-assigned arrows with `__name(...)` helpers; those don't
   // exist in the browser context where Playwright serializes this function.
   // A plain string source survives the round trip cleanly.
-  const stepPx = SCROLL_STEP_PX;
-  const stepDelayMs = SCROLL_STEP_DELAY_MS;
   const src = `
     (async () => {
       function docHeight() {
         return Math.max(document.documentElement.scrollHeight,
                         document.body ? document.body.scrollHeight : 0);
       }
-      let y = 0;
-      let max = docHeight() - window.innerHeight;
-      while (y < max) {
-        y += ${stepPx};
-        window.scrollTo(0, y);
-        await new Promise(function(r){ setTimeout(r, ${stepDelayMs}); });
-        max = docHeight() - window.innerHeight;
+      function wait(ms) {
+        return new Promise(function(r){ setTimeout(r, ms); });
       }
-      window.scrollTo(0, max);
-      await new Promise(function(r){ setTimeout(r, ${stepDelayMs}); });
-      window.scrollTo(0, 0);
+      function rand(min, max) {
+        return min + Math.random() * (max - min);
+      }
+
+      let max = Math.max(0, docHeight() - window.innerHeight);
+      if (max <= 0) return;
+
+      var scrolls = 2 + Math.floor(Math.random() * 4);
+      var target = Math.min(max, max * rand(0.28, 0.72));
+      var y = 0;
+      for (var i = 0; i < scrolls; i++) {
+        max = Math.max(0, docHeight() - window.innerHeight);
+        target = Math.min(target, max);
+        var remaining = target - y;
+        if (remaining <= 20) break;
+        var step = remaining / (scrolls - i) * rand(0.7, 1.35);
+        y = Math.min(target, y + Math.max(120, step));
+        window.scrollTo({ top: y, behavior: 'smooth' });
+        await wait(rand(650, 1800));
+        await wait(rand(350, 1400));
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      await wait(rand(500, 1200));
     })()
   `;
   await page.evaluate(src);

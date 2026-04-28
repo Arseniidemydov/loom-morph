@@ -67,6 +67,18 @@ describe('buildFilterGraph', () => {
     expect(g.filterComplex).toContain('overlay=1520:680:');
   });
 
+  it('supports zooming and offsetting the media inside the circle crop', () => {
+    const g = buildFilterGraph({
+      ...base,
+      circleCropScale: 1.5,
+      circleCropX: 40,
+      circleCropY: -20,
+    });
+    expect(g.filterComplex).toContain(
+      '[1:v]scale=420:420:force_original_aspect_ratio=increase,crop=280:280:(iw-280)*0.7:(ih-280)*0.4[c_raw]',
+    );
+  });
+
   // ─── 1080p output works for narrow / short captures ─────────────────────────
   // The capture worker often returns a 1280×800 PNG (viewport size on a short
   // page). The filter graph must scale that up so a 1920×1080 crop is valid.

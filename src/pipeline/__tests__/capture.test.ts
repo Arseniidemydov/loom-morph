@@ -19,7 +19,7 @@ function chromiumInstalled(): boolean {
   // Try the Playwright CLI's "show me where chromium is" probe; presence of
   // the launcher path is enough.
   try {
-    const r = spawnSync('node', ['-e', "console.log(require('playwright').chromium.executablePath())"], {
+    const r = spawnSync('node', ['-e', "import('playwright').then((m)=>console.log(m.chromium.executablePath()))"], {
       encoding: 'utf8',
       cwd: REPO_ROOT,
     });

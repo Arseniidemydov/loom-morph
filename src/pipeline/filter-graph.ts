@@ -44,6 +44,7 @@ export function buildFilterGraph(config: RenderConfig): FilterGraph {
   const C = CIRCLE_PIXELS[config.circleSize];
   const margin = config.circleMargin;
   const { x: X, y: Y } = overlayCoords(config.circlePosition, W, H, C, margin);
+  const circleCrop = circleCropFilter(C, config);
 
   // Pan expression is in fractional units of `(ih-H)` so it works regardless
   // of the input screenshot's width or height — see buildHumanScrollExpression.
@@ -58,7 +59,7 @@ export function buildFilterGraph(config: RenderConfig): FilterGraph {
   // failed because crop=1920:1080 needs iw ≥ 1920 / ih ≥ 1080.
   const lines = [
     `[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-${W})/2:${panY},setsar=1,fps=30[bg];`,
-    `[1:v]scale=${C}:${C}:force_original_aspect_ratio=increase,crop=${C}:${C}[c_raw];`,
+    `[1:v]${circleCrop}[c_raw];`,
     `[c_raw][2:v]alphamerge[circle];`,
     `[bg][circle]overlay=${X}:${Y}:shortest=0[v]`,
   ];
@@ -72,6 +73,32 @@ export function buildFilterGraph(config: RenderConfig): FilterGraph {
     videoMap: '[v]',
     audioMap: audio ? '[a]' : undefined,
   };
+}
+
+function circleCropFilter(size: number, config: RenderConfig): string {
+  const scale = clampNumber(config.circleCropScale ?? 1, 1, 2.5);
+  const x = clampNumber(config.circleCropX ?? 0, -100, 100);
+  const y = clampNumber(config.circleCropY ?? 0, -100, 100);
+  if (scale === 1 && x === 0 && y === 0) {
+    return `scale=${size}:${size}:force_original_aspect_ratio=increase,crop=${size}:${size}`;
+  }
+
+  const scaled = Math.round(size * scale);
+  return [
+    `scale=${scaled}:${scaled}:force_original_aspect_ratio=increase`,
+    `crop=${size}:${size}:${cropOffsetExpr('iw', size, x)}:${cropOffsetExpr('ih', size, y)}`,
+  ].join(',');
+}
+
+function cropOffsetExpr(axis: 'iw' | 'ih', size: number, offset: number): string {
+  if (offset === 0) return `(${axis}-${size})/2`;
+  const frac = formatFrac((offset + 100) / 200);
+  return `(${axis}-${size})*${frac}`;
+}
+
+function clampNumber(value: number, lo: number, hi: number): number {
+  if (!Number.isFinite(value)) return lo;
+  return Math.max(lo, Math.min(hi, value));
 }
 
 interface ScrollSegment {
@@ -244,6 +271,9 @@ export function buildFfmpegArgs(job: RenderJob, opts: BuildOptions = {}): string
     circlePosition: job.config.circlePosition,
     circleSize: job.config.circleSize,
     circleMargin: job.config.circleMargin,
+    circleCropScale: job.config.circleCropScale,
+    circleCropX: job.config.circleCropX,
+    circleCropY: job.config.circleCropY,
     circleHasAudio: job.circleHasAudio,
     audioMp3Present,
   };

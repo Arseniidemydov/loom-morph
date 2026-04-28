@@ -45,19 +45,26 @@ example.com`;
     expect(result.skipped[1]).toMatchObject({ rowIndex: 2, raw: 'not-a-url' });
   });
 
-  it('caps at maxLeads (default 100)', () => {
+  it('caps at maxLeads (default 3)', () => {
     const lines = ['website'];
     for (let i = 0; i < 250; i++) lines.push(`example${i}.com`);
     const result = parseLeadsCsv(lines.join('\n'));
-    expect(result.leads).toHaveLength(100);
+    expect(result.leads).toHaveLength(3);
     expect(result.totalRows).toBe(250);
   });
 
-  it('respects custom maxLeads', () => {
+  it('respects smaller custom maxLeads', () => {
+    const lines = ['website'];
+    for (let i = 0; i < 50; i++) lines.push(`example${i}.com`);
+    const result = parseLeadsCsv(lines.join('\n'), { maxLeads: 2 });
+    expect(result.leads).toHaveLength(2);
+  });
+
+  it('does not allow custom maxLeads above the hard cap', () => {
     const lines = ['website'];
     for (let i = 0; i < 50; i++) lines.push(`example${i}.com`);
     const result = parseLeadsCsv(lines.join('\n'), { maxLeads: 5 });
-    expect(result.leads).toHaveLength(5);
+    expect(result.leads).toHaveLength(3);
   });
 
   it('throws when no website column is inferable', () => {

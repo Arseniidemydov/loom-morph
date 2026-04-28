@@ -9,7 +9,7 @@ import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { runBatch, shutdownEngine } from '@/lib/engine';
-import { parseLeadsCsvFile } from '@/lib/csv';
+import { MAX_BATCH_LEADS, parseLeadsCsvFile } from '@/lib/csv';
 import { parseRowSpec, type RowSpec } from '@/lib/row-spec';
 import type { BatchConfig, BatchEvent, CirclePosition, CircleSize, Resolution } from '@/types';
 
@@ -65,7 +65,10 @@ function parseCli(argv: string[]): CliArgs {
 
   const circle = required(values.circle, '--circle');
   const durationSec = values.duration ? toPositiveInt(values.duration, '--duration') : 30;
-  const maxLeads = values['max-leads'] ? toPositiveInt(values['max-leads'], '--max-leads') : 100;
+  const requestedMaxLeads = values['max-leads']
+    ? toPositiveInt(values['max-leads'], '--max-leads')
+    : MAX_BATCH_LEADS;
+  const maxLeads = Math.min(requestedMaxLeads, MAX_BATCH_LEADS);
   const circleMargin = values['circle-margin']
     ? toPositiveInt(values['circle-margin'], '--circle-margin')
     : 40;
@@ -136,7 +139,7 @@ Options:
   --filename-template <template> output filename template (default: {company}.mp4)
   --batch-id <id>                stable batch id (default: random UUID)
   --data-root <dir>              storage root (default: current directory)
-  --max-leads <n>                cap rows processed (default: 100)
+  --max-leads <n>                cap rows processed (hard max/default: 3)
   --rows <spec>                  pick specific 1-based rows: "5", "1-3", "1,3-5,8"
   --duration <seconds>           video length (default: 30)
   --resolution 720p|1080p        output resolution (default: 1080p)

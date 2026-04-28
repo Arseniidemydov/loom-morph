@@ -101,24 +101,10 @@ export interface BatchListItem {
 export function listBatches(opts: SnapshotOptions = {}): BatchListItem[] {
   const paths = opts.paths ?? createPaths({ root: opts.dataRoot });
   if (!existsSync(paths.db())) return [];
-  const ownDb = opts.db === undefined;
-  const db = opts.db ?? createDbClient({ filename: paths.db() });
-  try {
-    // We don't have a direct list-all method on DbClient (intentionally —
-    // the orchestrator only writes/reads single batches). Reach into the
-    // raw better-sqlite3 instance via the same client by exposing its
-    // .getBatch loop is wasteful. Instead, use the underlying file directly
-    // for the list query.
-    //
-    // Pragmatic: re-read the DB through a minimal raw query. Until DbClient
-    // grows a listBatches method, this is fine.
-    return rawListBatches(paths.db());
-  } finally {
-    // ownDb is unused above (we never opened db here), but keep the symmetry
-    // so future implementations can swap to db-method without changing
-    // calling code.
-    if (ownDb && opts.db) opts.db.close();
-  }
+  // We don't have a direct list-all method on DbClient (intentionally — the
+  // orchestrator only writes/reads single batches). Use a short-lived read-only
+  // connection for this query so callers do not need to manage another handle.
+  return rawListBatches(paths.db());
 }
 
 function rawListBatches(dbPath: string): BatchListItem[] {

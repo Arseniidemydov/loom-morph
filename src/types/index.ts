@@ -39,6 +39,9 @@ export interface BatchConfig {
   circlePosition: CirclePosition;
   circleSize: CircleSize;
   circleMargin: number; // px from edge, default 40
+  circleCropScale?: number; // 1-2.5, zooms the source inside the circle mask
+  circleCropX?: number; // -100..100, shifts the crop horizontally
+  circleCropY?: number; // -100..100, shifts the crop vertically
   filenameTemplate: string; // e.g. "{company}.mp4", fallback "lead-{i}.mp4"
 }
 
@@ -99,6 +102,9 @@ export interface RenderConfig {
   circlePosition: CirclePosition;
   circleSize: CircleSize;
   circleMargin: number;
+  circleCropScale?: number;
+  circleCropX?: number;
+  circleCropY?: number;
   circleHasAudio: boolean;
   audioMp3Present: boolean; // D-015 — separate flag so the four audio paths are decidable
 }

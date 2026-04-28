@@ -11,7 +11,7 @@ import { normalizeWebsite } from './url';
 //     omitted, infer by exact match on common names.
 //   - Rows where the website cannot be normalized are dropped from the
 //     output AND reported in `skipped` so the caller can surface a count.
-//   - Hard cap at `maxLeads` (default 100, per PLAN.md "100 leads/batch").
+//   - Hard cap at `maxLeads` (default 3 for the current demo/product cap).
 //   - All other CSV columns ride along on `csvData` for filename templating.
 
 export interface ParseLeadsOptions {
@@ -37,7 +37,7 @@ const WEBSITE_HEADER_CANDIDATES = [
   'company domain',
 ];
 
-const DEFAULT_MAX_LEADS = 100;
+export const MAX_BATCH_LEADS = 3;
 
 export async function parseLeadsCsvFile(
   filePath: string,
@@ -48,7 +48,7 @@ export async function parseLeadsCsvFile(
 }
 
 export function parseLeadsCsv(text: string, opts: ParseLeadsOptions = {}): ParseLeadsResult {
-  const max = opts.maxLeads ?? DEFAULT_MAX_LEADS;
+  const max = Math.min(opts.maxLeads ?? MAX_BATCH_LEADS, MAX_BATCH_LEADS);
 
   const parsed = Papa.parse<Record<string, string>>(text, {
     header: true,

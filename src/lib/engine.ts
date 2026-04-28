@@ -1,7 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { captureWebsite, shutdownCapturePool } from '@/pipeline/capture';
-import { createRender } from '@/pipeline/render';
+import path from 'node:path';
 import { createDbClient, type DbClient } from '@/db/client';
 import { BatchOrchestrator, type OrchestratorPaths } from '@/orchestrator/orchestrator';
 import type {
@@ -68,17 +67,17 @@ export interface BatchSummary {
 const VIDEO_CIRCLE_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.mkv']);
 
 let sharedDb: DbClient | null = null;
+let sharedDbPath: string | null = null;
 
 export async function runBatch(opts: RunBatchOptions): Promise<RunningBatch> {
   const batchId = opts.batchId ?? randomUUID();
   const paths = createPaths({ root: opts.dataRoot });
   await ensureBatchDirs(paths, batchId);
 
-  const db = sharedDb ?? createDbClient({ filename: paths.db() });
-  if (!sharedDb) sharedDb = db;
+  const db = getSharedDb(paths.db());
 
-  const captureFn = opts.capture ?? captureWebsite;
-  const renderFn = opts.render ?? createRender();
+  const captureFn = opts.capture ?? (await defaultCaptureFn());
+  const renderFn = opts.render ?? (await defaultRenderFn());
 
   const circleHasAudio = opts.assets.circleHasAudio ?? hasAudioByExtension(opts.assets.circleSourcePath);
 
@@ -204,6 +203,31 @@ export async function shutdownEngine(): Promise<void> {
   if (sharedDb) {
     sharedDb.close();
     sharedDb = null;
+    sharedDbPath = null;
   }
+  const { shutdownCapturePool } = await import('@/pipeline/capture');
   await shutdownCapturePool();
+}
+
+function getSharedDb(filename: string): DbClient {
+  if (sharedDb && sharedDbPath !== filename) {
+    sharedDb.close();
+    sharedDb = null;
+    sharedDbPath = null;
+  }
+  if (!sharedDb) {
+    sharedDb = createDbClient({ filename });
+    sharedDbPath = filename;
+  }
+  return sharedDb;
+}
+
+async function defaultCaptureFn(): Promise<CaptureFn> {
+  const { captureWebsite } = await import('@/pipeline/capture');
+  return captureWebsite;
+}
+
+async function defaultRenderFn(): Promise<RenderFn> {
+  const { createRender } = await import('@/pipeline/render');
+  return createRender({ maskDir: path.join(process.cwd(), 'public') });
 }

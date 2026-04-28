@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runBatch, shutdownEngine } from '@/lib/engine';
+import { getBatchSnapshot } from '@/lib/snapshot';
 import type {
   BatchConfig,
   BatchEvent,
@@ -182,6 +183,44 @@ describe('runBatch engine facade', () => {
     expect(summary).toMatchObject({ done: 1, failed: 1 });
     expect(report).toContain('https://good.example/,done,');
     expect(report).toContain('https://bad.example/,failed,,,,"site unreachable, ""blocked"""');
+  });
+
+  it('switches the shared DB when dataRoot changes without shutdown', async () => {
+    const rootA = await mkdtemp(path.join(tmpdir(), 'loom-engine-root-a-'));
+    const rootB = await mkdtemp(path.join(tmpdir(), 'loom-engine-root-b-'));
+    try {
+      const first = await runBatch({
+        batchId: 'root-a-batch',
+        dataRoot: rootA,
+        config: baseConfig,
+        leads: [lead('https://a.example/', 'A')],
+        assets: { circleSourcePath: path.join(rootA, 'circle.png') },
+        capture: successCapture(),
+        render: successRender(),
+      });
+      await collect(first.events);
+      await first.completion;
+
+      const second = await runBatch({
+        batchId: 'root-b-batch',
+        dataRoot: rootB,
+        config: baseConfig,
+        leads: [lead('https://b.example/', 'B')],
+        assets: { circleSourcePath: path.join(rootB, 'circle.png') },
+        capture: successCapture(),
+        render: successRender(),
+      });
+      await collect(second.events);
+      await second.completion;
+      await shutdownEngine();
+
+      expect(getBatchSnapshot('root-a-batch', { dataRoot: rootA })).not.toBeNull();
+      expect(getBatchSnapshot('root-b-batch', { dataRoot: rootB })).not.toBeNull();
+      expect(getBatchSnapshot('root-b-batch', { dataRoot: rootA })).toBeNull();
+    } finally {
+      await rm(rootA, { recursive: true, force: true });
+      await rm(rootB, { recursive: true, force: true });
+    }
   });
 });
 
