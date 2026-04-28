@@ -41,6 +41,20 @@ async function makeCirclePng(pathOut: string, size = 400): Promise<void> {
     .toFile(pathOut);
 }
 
+// Generate a short test video at the given dimensions, optionally with audio.
+// Uses ffmpeg's lavfi sources so no external assets needed.
+function makeCircleVideo(pathOut: string, durationSec: number, withAudio: boolean, width = 640, height = 360): void {
+  const args = ['-y', '-f', 'lavfi', '-i', `testsrc=size=${width}x${height}:rate=30:duration=${durationSec}`];
+  if (withAudio) {
+    args.push('-f', 'lavfi', '-i', `sine=frequency=440:duration=${durationSec}`, '-c:a', 'aac', '-shortest');
+  } else {
+    args.push('-an');
+  }
+  args.push('-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(durationSec), pathOut);
+  const r = spawnSync('ffmpeg', args, { stdio: 'pipe', encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`failed to generate fixture video: ${r.stderr}`);
+}
+
 function ffprobeJson(file: string): { streams: Array<Record<string, unknown>>; format: Record<string, unknown> } {
   const r = spawnSync('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', file], { encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`ffprobe failed: ${r.stderr}`);
@@ -207,6 +221,141 @@ maybe('render integration (real ffmpeg)', () => {
     const video = probe.streams.find((s) => s.codec_type === 'video');
     expect(video!.width).toBe(1280);
     expect(video!.height).toBe(720);
+  }, 60_000);
+
+  // ─── Circle source: video instead of image ──────────────────────────────
+  // The capture is the same; what changes is [1:v]/[1:a]. The render must
+  // crop the rectangular video into a circle (alphamerge with the mask) and,
+  // when circleHasAudio is true, route that audio through the filter graph.
+
+  it('renders with a VIDEO circle source (silent video, no MP3) — output has no audio', async () => {
+    const shotPath = path.join(FIXTURE_DIR, 'shot-vc.png');
+    const videoPath = path.join(FIXTURE_DIR, 'circle-silent.mp4');
+    const outPath = path.join(OUT_DIR, 'video-circle-silent.mp4');
+
+    await makeShotPng(shotPath, 4000);
+    makeCircleVideo(videoPath, 2, false, 640, 480);
+
+    const job: RenderJob = {
+      screenshotPath: shotPath,
+      screenshotHeight: 4000,
+      circleSourcePath: videoPath,
+      circleHasAudio: false,
+      outputPath: outPath,
+      config: {
+        durationSec: 2,
+        resolution: '720p',
+        circlePosition: 'bottom-right',
+        circleSize: 'M',
+        circleMargin: 30,
+        filenameTemplate: '',
+      },
+    };
+    await createRender({ maskDir: MASK_DIR })(job);
+
+    const probe = ffprobeJson(outPath);
+    expect(probe.streams.find((s) => s.codec_type === 'video')!.codec_name).toBe('h264');
+    expect(probe.streams.find((s) => s.codec_type === 'audio')).toBeUndefined();
+  }, 60_000);
+
+  it('renders with a VIDEO circle source carrying its own audio — output has aac', async () => {
+    const shotPath = path.join(FIXTURE_DIR, 'shot-vc.png');
+    const videoPath = path.join(FIXTURE_DIR, 'circle-with-audio.mp4');
+    const outPath = path.join(OUT_DIR, 'video-circle-audio.mp4');
+
+    await makeShotPng(shotPath, 4000);
+    makeCircleVideo(videoPath, 2, true, 640, 480);
+
+    const job: RenderJob = {
+      screenshotPath: shotPath,
+      screenshotHeight: 4000,
+      circleSourcePath: videoPath,
+      circleHasAudio: true,
+      outputPath: outPath,
+      config: {
+        durationSec: 2,
+        resolution: '1080p',     // also exercises the 1080p fix on top of video circle
+        circlePosition: 'top-right',
+        circleSize: 'L',
+        circleMargin: 50,
+        filenameTemplate: '',
+      },
+    };
+    await createRender({ maskDir: MASK_DIR })(job);
+
+    const probe = ffprobeJson(outPath);
+    const v = probe.streams.find((s) => s.codec_type === 'video')!;
+    expect(v.codec_name).toBe('h264');
+    expect(v.width).toBe(1920);
+    expect(v.height).toBe(1080);
+    const a = probe.streams.find((s) => s.codec_type === 'audio')!;
+    expect(a.codec_name).toBe('aac');
+  }, 60_000);
+
+  it('VIDEO circle audio + MP3 narration → amix path, output has aac', async () => {
+    const shotPath = path.join(FIXTURE_DIR, 'shot-vc.png');
+    const videoPath = path.join(FIXTURE_DIR, 'circle-amix.mp4');
+    const audioPath = path.join(FIXTURE_DIR, 'narration-amix.mp3');
+    const outPath = path.join(OUT_DIR, 'video-circle-amix.mp4');
+
+    await makeShotPng(shotPath, 4000);
+    makeCircleVideo(videoPath, 2, true, 640, 480);
+    // Generate a 2s mp3 narration via lavfi.
+    const gen = spawnSync('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'sine=frequency=220:duration=2', '-c:a', 'libmp3lame', audioPath], { stdio: 'ignore' });
+    expect(gen.status).toBe(0);
+
+    const job: RenderJob = {
+      screenshotPath: shotPath,
+      screenshotHeight: 4000,
+      circleSourcePath: videoPath,
+      circleHasAudio: true,
+      audioPath,
+      outputPath: outPath,
+      config: {
+        durationSec: 2,
+        resolution: '720p',
+        circlePosition: 'bottom-left',
+        circleSize: 'M',
+        circleMargin: 30,
+        filenameTemplate: '',
+      },
+    };
+    await createRender({ maskDir: MASK_DIR })(job);
+
+    const probe = ffprobeJson(outPath);
+    expect(probe.streams.find((s) => s.codec_type === 'audio')!.codec_name).toBe('aac');
+  }, 60_000);
+
+  it('short circle video + longer output — overlay holds last frame, output reaches full duration', async () => {
+    // 1-second circle video, 3-second output. FFmpeg overlay's default
+    // eof_action=repeat keeps the last frame on screen for the gap.
+    const shotPath = path.join(FIXTURE_DIR, 'shot-vc.png');
+    const videoPath = path.join(FIXTURE_DIR, 'circle-1s.mp4');
+    const outPath = path.join(OUT_DIR, 'video-circle-shorter.mp4');
+
+    await makeShotPng(shotPath, 4000);
+    makeCircleVideo(videoPath, 1, false, 640, 480);
+
+    const job: RenderJob = {
+      screenshotPath: shotPath,
+      screenshotHeight: 4000,
+      circleSourcePath: videoPath,
+      circleHasAudio: false,
+      outputPath: outPath,
+      config: {
+        durationSec: 3,
+        resolution: '720p',
+        circlePosition: 'bottom-right',
+        circleSize: 'S',
+        circleMargin: 20,
+        filenameTemplate: '',
+      },
+    };
+    await createRender({ maskDir: MASK_DIR })(job);
+
+    const probe = ffprobeJson(outPath);
+    const dur = Number.parseFloat(String(probe.format['duration']));
+    expect(dur).toBeGreaterThanOrEqual(2.9); // ≈ 3.0 modulo container fudge
   }, 60_000);
 
   it('rejects with RenderError when ffmpeg exits non-zero (missing input)', async () => {
