@@ -8,6 +8,32 @@ Branches awaiting review and merge to `main`. The Lead Agent maintains this file
 
 ## Ready for review
 
+### Branch: feature/pipeline-capture
+- Owner: capture-agent (Lead Agent acting in role)
+- Task: TASK-002
+- Status: ready for review
+- Tests run:
+  - `npm run typecheck` — pass
+  - `npm run test` — pass (43/43, including 5 real-Chromium integration tests)
+- Files:
+  - `src/pipeline/capture.ts` — `captureWebsite` (CaptureFn) + `shutdownCapturePool` + `__resetForTests`
+  - `src/pipeline/cookie-selectors.ts` — static cookie/consent banner selector list + `injectionCss()`
+  - `src/pipeline/__tests__/capture.test.ts` — 7 tests (input validation + 5 real-Chromium against a local fixture HTTP server)
+- Behavior:
+  - Lazy chromium (playwright-extra + stealth), context pool default 6, recycle every 20 jobs.
+  - Per call: viewport 1280×800, networkidle goto (30 s timeout), bot-wall short-circuit (403 OR known interstitial fingerprint), cookie-CSS inject, top→bottom→top auto-scroll, 1 s settle, fullPage screenshot.
+  - 16,000 px height cap via `sharp.extract` post-crop on pathologically tall pages.
+  - Structured CaptureError on every failure path; never throws raw Playwright errors past the boundary.
+- Risks:
+  - low–medium
+  - Two debug-cycle bugs surfaced during integration that are worth flagging:
+    1. Bundlers (tsx/esbuild + vite) wrap named/const-assigned arrows with `__name(...)` helpers when transpiling. Those don't exist when Playwright serializes the function for `page.evaluate`. Fixed by passing the body as a string to `page.evaluate` for both `autoScroll` and the dimension probe.
+    2. Playwright's `clip` option clips within the viewport (1280×800) unless paired with `fullPage:true`, and the two aren't reliably co-permitted. Switched to "fullPage screenshot, then `sharp.extract` if the page exceeds 16k". Equally fast and unambiguous.
+  - Anti-bot is best-effort by design (PLAN.md). v1 expects 5–15% capture failure rate on real B2B lists.
+- Depends on: TASK-001 (merged)
+- Recommended merge order: 4 (independent of TASK-003)
+- Reviewer status: pending
+
 ### Branch: feature/pipeline-render
 - Owner: render-agent (Lead Agent acting in role)
 - Task: TASK-003

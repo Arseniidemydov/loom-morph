@@ -33,7 +33,12 @@ Format:
 - **STARTED: TASK-003 — render worker.** Branch `feature/pipeline-render`.
 - **FINISHED: TASK-003.** `src/pipeline/filter-graph.ts` (pure `buildFilterGraph` + `buildFfmpegArgs`; smoothstep pan, four corner overlays, four audio paths, circle alpha via pre-generated mask), `src/pipeline/render.ts` (spawns ffmpeg, streams stderr, last-50 tail on non-zero exit, optional kill timer). 36/36 vitest green including real-ffmpeg integration: produces 1280×720 H.264 yuv420p MP4 with valid AAC stream when MP3 is supplied. **D-015** recorded: `RenderConfig.hasAudioTrack` → `audioMp3Present` so the four audio paths are decidable.
 
+- **MERGED:** `feature/pipeline-render` → `main` (`e412c03`).
+- **STARTED: TASK-002 — capture worker.** Branch `feature/pipeline-capture`.
+- **FINISHED: TASK-002.** `src/pipeline/capture.ts` (lazy Chromium via playwright-extra + stealth, FIFO context pool default 6 with 20-job recycling, viewport 1280×800, networkidle goto with 30s timeout, bot-wall short-circuit on 403 or interstitial fingerprints, cookie-CSS injection, top→bottom→top auto-scroll, fullPage screenshot, 16k height cap via `sharp.extract` post-crop). `src/pipeline/cookie-selectors.ts` static selector list. 7/7 capture tests green (incl. 5 real-Chromium integration tests against a local fixture HTTP server). 43/43 across the full suite. Two debug findings worth recording:
+  - tsx/vite/esbuild wrap named/const-assigned arrows with `__name(...)` calls — those don't exist when Playwright serializes the body for `page.evaluate`. Worked around by passing string-form bodies to `page.evaluate` for the two browser-side scripts.
+  - Playwright's `clip` clips within the viewport unless paired with `fullPage:true`, and the two aren't reliably co-permitted. Switched to "fullPage screenshot, then `sharp.extract` post-crop" when the page exceeds 16k px.
+
 ### Next up
-- Human review/merge of `feature/pipeline-render` (entry in [`ai/MERGE_QUEUE.md`](ai/MERGE_QUEUE.md)).
-- TASK-002 (capture) — Playwright worker; will branch from `main` after this merges.
-- TASK-005 (Phase 1 CLI spike) sequences after TASK-002 + TASK-003 land; wires up a concrete `OrchestratorPaths` backed by `src/lib/storage.ts`.
+- Human review/merge of `feature/pipeline-capture` (entry in [`ai/MERGE_QUEUE.md`](ai/MERGE_QUEUE.md)).
+- TASK-005 (Phase 1 CLI spike) — wires capture + render via `src/cli/spike.ts` and a concrete `OrchestratorPaths` backed by `src/lib/storage.ts`. Smoke-test against ≥3 real websites.
