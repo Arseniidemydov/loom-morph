@@ -11,7 +11,7 @@
     "lint": "next lint",
     "test": "vitest run",
     "generate-mask": "tsc -p scripts/tsconfig.json && node scripts/.dist/generate-mask.js",
-    "spike": "node -e \"console.log('TASK-005 not yet implemented'); process.exit(0)\""
+    "spike": "tsx src/cli/spike.ts"
   },
   "dependencies": {
     "archiver": "^7.0.1",
@@ -37,6 +37,7 @@
     "eslint": "^8.57.1",
     "eslint-config-next": "^14.2.18",
     "prettier": "^3.3.3",
+    "tsx": "^4.21.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.5"
   }

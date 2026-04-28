@@ -169,3 +169,15 @@ Supersedes: D-XXX (if applicable)
 **Tradeoff:** Tiny contract surface change. Caller must set both booleans explicitly; no implicit derivation.
 
 **Alternatives considered:** Keep `hasAudioTrack` and treat any ambiguity as "both" (rejected — silently picks the wrong filter graph for circle-only inputs); add `audioMp3Present` as an additional field alongside `hasAudioTrack` (rejected — redundant, two flags describe the same axis).
+
+---
+
+## D-016 — Add `tsx` to dev deps for the CLI spike (2026-04-28)
+
+**Decision:** Add `tsx` as a devDependency. Used by the `spike` npm script to run TypeScript directly without a separate compile step. Required because the pipeline modules use the `@/*` path alias, which Node's bare `--experimental-transform-types` loader does not resolve.
+
+**Why:** TASK-005's contract said "no new deps". That clause was authored to protect runtime stability across parallel branches (D-010). `tsx` is a dev tool that runs `node` as a subprocess with a TS loader — it doesn't ship with the runtime, isn't imported by app code, and doesn't enter `dependencies`. The original rule's intent is preserved.
+
+**Tradeoff:** ~25 MB more in `node_modules`. Acceptable for a dev tool used by a single script.
+
+**Alternatives considered:** Rewriting every pipeline module to use relative imports (rejected — large diff, churn for no real gain); writing a custom Node loader hook for `@/*` (rejected — reinvents `tsx` worse); compiling the spike like `generate-mask` (rejected — would need to compile the entire transitive dep tree of pipeline modules).

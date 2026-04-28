@@ -8,6 +8,28 @@ Branches awaiting review and merge to `main`. The Lead Agent maintains this file
 
 ## Ready for review
 
+### Branch: feature/cli-spike
+- Owner: integration-agent (Lead Agent acting in role)
+- Task: TASK-005
+- Status: ready for review
+- Branched from: `main` (TASK-001/002/003/004 all merged).
+- Tests run:
+  - `npm run typecheck` — pass
+  - `npm run test` — pass (46/46 across 8 suites)
+  - `npm run spike -- --help` — prints usage cleanly
+  - End-to-end against a local fixture HTTP server: captures 1280×1200 PNG, renders 720p H.264 MP4 (2 s) in ~3 s total
+- Files:
+  - `src/cli/spike.ts` — `parseArgs`-driven CLI; calls `captureWebsite()` then `render()`; structured error reporting; `shutdownCapturePool()` in `finally`
+  - `src/cli/__tests__/spike.test.ts` — 3 tests (--help, missing-flag exit code, real-Chromium+ffmpeg integration)
+  - `package.json` — `spike` script switched to `tsx src/cli/spike.ts`
+- Risks:
+  - low
+  - **D-016** added `tsx` as a devDep. TASK-005's contract said "no new deps"; the rule's intent (D-010, runtime stability) is preserved — `tsx` is dev-only and isn't imported by app code. Alternatives (rewriting every pipeline import to be relative, custom `@/*` loader) would have produced churn for no gain.
+- Phase 1 acceptance: ✅ — one URL → one acceptable MP4 in ~3 s.
+- Depends on: TASK-002 (merged), TASK-003 (merged)
+- Recommended merge order: 5
+- Reviewer status: pending
+
 ### Branch: feature/pipeline-capture
 - Owner: capture-agent (Lead Agent acting in role)
 - Task: TASK-002

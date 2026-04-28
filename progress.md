@@ -39,6 +39,15 @@ Format:
   - tsx/vite/esbuild wrap named/const-assigned arrows with `__name(...)` calls — those don't exist when Playwright serializes the body for `page.evaluate`. Worked around by passing string-form bodies to `page.evaluate` for the two browser-side scripts.
   - Playwright's `clip` clips within the viewport unless paired with `fullPage:true`, and the two aren't reliably co-permitted. Switched to "fullPage screenshot, then `sharp.extract` post-crop" when the page exceeds 16k px.
 
+- **MERGED:** `feature/pipeline-capture` → `main` (`f5c1e8d`).
+- **STARTED: TASK-005 — Phase 1 CLI spike.** Branch `feature/cli-spike`.
+- **FINISHED: TASK-005.** `src/cli/spike.ts` (parseArgs CLI, structured error reporting, `shutdownCapturePool` in `finally`). `package.json` `spike` script → `tsx src/cli/spike.ts`. 3 CLI tests green; full suite 46/46. End-to-end against a fixture: 1280×1200 PNG capture in 2.1 s + 720p H.264 render in 0.3 s = ~3 s total. **Phase 1 acceptance met:** one URL → one acceptable-looking MP4. **D-016** recorded: `tsx` added as devDep so the spike doesn't need a manual compile step or a custom `@/*` loader.
+
+### Phase 1 — DONE (2026-04-28)
+
+End-to-end pipeline spike validated. Capture + filter-graph + render compose cleanly. Time to author Phase 2 task contracts (CSV ingest, batch driver wiring the orchestrator, output ZIP, `report.csv`).
+
 ### Next up
-- Human review/merge of `feature/pipeline-capture` (entry in [`ai/MERGE_QUEUE.md`](ai/MERGE_QUEUE.md)).
-- TASK-005 (Phase 1 CLI spike) — wires capture + render via `src/cli/spike.ts` and a concrete `OrchestratorPaths` backed by `src/lib/storage.ts`. Smoke-test against ≥3 real websites.
+- Human review/merge of `feature/cli-spike` (entry in [`ai/MERGE_QUEUE.md`](ai/MERGE_QUEUE.md)).
+- Author Phase 2 task contracts: CSV ingest (`src/lib/csv.ts`, `src/lib/url.ts`), batch driver CLI (`loom-morph run leads.csv …`) wiring `BatchOrchestrator` to real `captureWebsite` + `render`, `OrchestratorPaths` impl in `src/lib/storage.ts`, `report.csv` writer.
+- **Note for the human:** parallel Phase 3 frontend work (`src/app/`, `src/components/batch-workbench.tsx`, `.eslintrc.json`, `next-env.d.ts`, plus a Next-plugin update to `tsconfig.json`) appeared on disk during this session and is currently uncommitted. Left intact so the human can decide how to onboard it (likely needs its own branch + task contract).
