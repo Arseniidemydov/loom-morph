@@ -31,3 +31,8 @@ tests/fixtures/render/*
 !tests/fixtures/render/.gitkeep
 tests/fixtures/capture/*
 !tests/fixtures/capture/.gitkeep
+
+# Dev test assets (binary, large; not source). Drop your own copies here
+# to enable the workbench UI prefill. See `npm run stage:test-assets`.
+test_assets/
+public/test-assets/

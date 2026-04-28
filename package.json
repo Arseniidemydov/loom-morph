@@ -11,7 +11,8 @@
     "lint": "next lint",
     "test": "vitest run",
     "generate-mask": "tsc -p scripts/tsconfig.json && node scripts/.dist/generate-mask.js",
-    "spike": "tsx src/cli/spike.ts"
+    "spike": "tsx src/cli/spike.ts",
+    "stage:test-assets": "tsx scripts/stage-test-assets.ts"
   },
   "dependencies": {
     "archiver": "^7.0.1",
