@@ -10,6 +10,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { runBatch, shutdownEngine } from '@/lib/engine';
 import { parseLeadsCsvFile } from '@/lib/csv';
+import { parseRowSpec, type RowSpec } from '@/lib/row-spec';
 import type { BatchConfig, BatchEvent, CirclePosition, CircleSize, Resolution } from '@/types';
 
 interface CliArgs {
@@ -27,6 +28,7 @@ interface CliArgs {
   circleMargin: number;
   filenameTemplate: string;
   circleHasAudio?: boolean;
+  rows?: RowSpec;
 }
 
 function parseCli(argv: string[]): CliArgs {
@@ -47,6 +49,7 @@ function parseCli(argv: string[]): CliArgs {
       'circle-margin': { type: 'string' },
       'circle-has-audio': { type: 'boolean' },
       'filename-template': { type: 'string' },
+      rows: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
     strict: true,
@@ -97,6 +100,7 @@ function parseCli(argv: string[]): CliArgs {
     circleMargin,
     filenameTemplate: values['filename-template'] ?? '{company}.mp4',
     circleHasAudio: values['circle-has-audio'],
+    rows: values.rows ? parseRowSpec(values.rows) : undefined,
   };
 }
 
@@ -133,6 +137,7 @@ Options:
   --batch-id <id>                stable batch id (default: random UUID)
   --data-root <dir>              storage root (default: current directory)
   --max-leads <n>                cap rows processed (default: 100)
+  --rows <spec>                  pick specific 1-based rows: "5", "1-3", "1,3-5,8"
   --duration <seconds>           video length (default: 30)
   --resolution 720p|1080p        output resolution (default: 1080p)
   --circle-position <pos>        top-left|top-right|bottom-left|bottom-right
@@ -155,13 +160,32 @@ async function main(): Promise<void> {
   await ensureFile(args.circle, '--circle');
   if (args.audio) await ensureFile(args.audio, '--audio');
 
+  // When --rows is set we need to scan the whole CSV to find the requested
+  // indexes; the post-filter then enforces --max-leads.
+  const csvParseCap = args.rows ? Number.MAX_SAFE_INTEGER : args.maxLeads;
   const parsed = await parseLeadsCsvFile(args.csvPath, {
     websiteColumn: args.websiteColumn,
-    maxLeads: args.maxLeads,
+    maxLeads: csvParseCap,
   });
 
   if (parsed.leads.length === 0) {
     throw new Error(`CSV parsed, but no usable leads were found in column "${parsed.websiteColumn}"`);
+  }
+
+  let leads = parsed.leads;
+  if (args.rows) {
+    const before = leads.length;
+    leads = leads.filter((l) => args.rows!.matches(l.rowIndex));
+    // eslint-disable-next-line no-console
+    console.log(`[batch] --rows ${args.rows.description} → ${leads.length}/${before} match`);
+    if (leads.length === 0) {
+      throw new Error(`--rows ${args.rows.description} matched no rows in CSV (totalRows=${parsed.totalRows})`);
+    }
+  }
+  if (leads.length > args.maxLeads) {
+    leads = leads.slice(0, args.maxLeads);
+    // eslint-disable-next-line no-console
+    console.log(`[batch] capped to --max-leads ${args.maxLeads}`);
   }
 
   const config: BatchConfig = {
@@ -187,7 +211,7 @@ async function main(): Promise<void> {
     batchId: args.batchId,
     dataRoot: args.dataRoot,
     config,
-    leads: parsed.leads,
+    leads,
     assets: {
       circleSourcePath: args.circle,
       circleHasAudio: args.circleHasAudio,
