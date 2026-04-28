@@ -214,3 +214,17 @@ When all three are at defaults, the filter graph emits the unchanged single-line
 **Alternatives considered:** Keep the 100 cap (rejected — too long-running for the current demo cadence); make it env-configurable (rejected — small constant, easier to read in code than thread through env).
 
 **Action:** `src/lib/csv.ts` exports `MAX_BATCH_LEADS`. `src/cli/run.ts` and `src/app/api/batches/route.ts` use it. Workbench duplicates the constant locally to avoid pulling node-only modules into the client bundle (small duplication, acceptable).
+
+---
+
+## D-019 — Recording-mode capture for dynamic pages (`backgroundKind: 'image' | 'video'`) (2026-04-28)
+
+**Decision:** Add a recorder alongside the screenshot capturer. `src/pipeline/record.ts` exports `recordWebsite(input)` which uses Playwright's `recordVideo` context option to capture the live page over the configured duration, while a JS-side scroll driver inside the page produces the same human-ish pause/scroll pattern as the static-pan path. The render layer learns about both via a new optional field `RenderJob.backgroundKind: 'image' | 'video'` (mirrored on `RenderConfig`); when 'video', the filter graph centers + scales the input without a time-based pan, and `buildFfmpegArgs` drops the `-loop 1 -t D` flags for input 0.
+
+**Why:** D-001 chose screenshot-pan because it parallelises freely (100 leads). That tradeoff explicitly accepted "sites with hero animations or autoplay video backgrounds will appear frozen at their loaded-state frame" — which is exactly the case the user hit on real B2B landing pages. Recording mode preserves the live motion (videos, parallax, fade-ins) at the cost of one Playwright session per render-second.
+
+**Tradeoff:** Recording is real-time-bound: a 30 s output requires ≥30 s of recording wall time. Concurrency drops from "100 in 10 minutes" to "1 at a time" on a single dev machine. For batch use, the engine can choose mode per-lead based on a config flag — defaults to screenshot for batch throughput, recording for hand-picked dynamic targets.
+
+**Alternatives considered:** CDP `Page.startScreencast` piped to ffmpeg stdin (rejected — more moving parts, marginal benefit over Playwright's built-in recordVideo); CSS to disable animations + screenshot (rejected — kills the very thing we want to capture); hybrid (record above-the-fold, screenshot the rest) (rejected — visible seam, hard to time-align with the audio).
+
+**Action:** Implemented in `src/pipeline/record.ts` and `src/pipeline/scroll-segments.ts` (shared segment generator extracted from filter-graph.ts so screenshot-pan and recording use the same scroll choreography). `src/pipeline/filter-graph.ts` branches on `backgroundKind`. `src/cli/spike.ts` exposes `--mode recording`. UI integration in the workbench is a follow-up.

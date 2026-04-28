@@ -12,9 +12,13 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { captureWebsite, shutdownCapturePool } from '@/pipeline/capture';
+import { recordWebsite, shutdownRecordPool } from '@/pipeline/record';
 import { render } from '@/pipeline/render';
 import { CaptureError, RenderError } from '@/types';
 import type { BatchConfig, CirclePosition, CircleSize, Resolution, RenderJob } from '@/types';
+import { isCircleVideo } from '@/lib/circle-source';
+
+type CaptureMode = 'screenshot' | 'recording';
 
 interface CliArgs {
   url: string;
@@ -27,9 +31,8 @@ interface CliArgs {
   circleSize: CircleSize;
   circleMargin: number;
   circleHasAudio: boolean;
+  mode: CaptureMode;
 }
-
-const VIDEO_CIRCLE_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.mkv']);
 
 function parseCli(argv: string[]): CliArgs {
   const { values } = parseArgs({
@@ -45,6 +48,7 @@ function parseCli(argv: string[]): CliArgs {
       'circle-size': { type: 'string' },
       'circle-margin': { type: 'string' },
       'circle-has-audio': { type: 'boolean' },
+      mode: { type: 'string', short: 'm' },
       help: { type: 'boolean', short: 'h' },
     },
     strict: true,
@@ -76,8 +80,12 @@ function parseCli(argv: string[]): CliArgs {
   const circleMargin = values['circle-margin'] ? toInt(values['circle-margin'], '--circle-margin') : 40;
   // If --circle-has-audio is unset, infer from the circle file extension:
   // a video container probably has audio, an image definitely doesn't.
-  const ext = path.extname(circle).toLowerCase();
-  const circleHasAudio = values['circle-has-audio'] ?? VIDEO_CIRCLE_EXTENSIONS.has(ext);
+  const circleHasAudio = values['circle-has-audio'] ?? isCircleVideo(circle);
+
+  const mode = (values.mode ?? 'screenshot') as CaptureMode;
+  if (mode !== 'screenshot' && mode !== 'recording') {
+    throw new Error(`--mode must be 'screenshot' or 'recording' (got '${String(values.mode)}')`);
+  }
 
   return {
     url,
@@ -90,6 +98,7 @@ function parseCli(argv: string[]): CliArgs {
     circleSize,
     circleMargin,
     circleHasAudio,
+    mode,
   };
 }
 
@@ -122,6 +131,9 @@ Optional:
   --output <path>            output mp4 path (default: ./output/spike-<ts>.mp4)
   --duration <seconds>       video length (default: 30)
   --resolution 720p|1080p    output resolution (default: 1080p)
+  --mode, -m <mode>          'screenshot' (default; pans a static PNG) or
+                             'recording' (records the live page — use this
+                             for sites with hero videos / animations)
   --circle-position <pos>    top-left|top-right|bottom-left|bottom-right (default: bottom-right)
   --circle-size S|M|L        200/280/360 px (default: M)
   --circle-margin <px>       margin from corner (default: 40)
@@ -142,7 +154,6 @@ async function run(): Promise<void> {
 
   const tmpRoot = path.join(tmpdir(), `loom-morph-spike-${randomUUID()}`);
   await mkdir(tmpRoot, { recursive: true });
-  const screenshotPath = path.join(tmpRoot, 'shot.png');
   await mkdir(path.dirname(args.output), { recursive: true });
 
   const config: BatchConfig = {
@@ -154,20 +165,43 @@ async function run(): Promise<void> {
     filenameTemplate: '',
   };
 
-  // eslint-disable-next-line no-console
-  console.log(`[spike] capturing ${args.url} → ${screenshotPath}`);
-  const capture = await captureWebsite({ url: args.url, outputPath: screenshotPath });
-  // eslint-disable-next-line no-console
-  console.log(`[spike] captured: ${capture.width}×${capture.height} in ${capture.durationMs} ms`);
+  let backgroundPath: string;
+  let backgroundHeight: number;
+  let backgroundKind: 'image' | 'video';
+
+  if (args.mode === 'recording') {
+    backgroundPath = path.join(tmpRoot, 'page.webm');
+    backgroundKind = 'video';
+    // eslint-disable-next-line no-console
+    console.log(`[spike] recording (mode=recording) ${args.url} for ${args.durationSec}s → ${backgroundPath}`);
+    const rec = await recordWebsite({
+      url: args.url,
+      outputPath: backgroundPath,
+      durationSec: args.durationSec,
+    });
+    backgroundHeight = rec.height;
+    // eslint-disable-next-line no-console
+    console.log(`[spike] recorded: ${rec.width}×${rec.height}, ${rec.durationSec}s, in ${rec.durationMs} ms wall`);
+  } else {
+    backgroundPath = path.join(tmpRoot, 'shot.png');
+    backgroundKind = 'image';
+    // eslint-disable-next-line no-console
+    console.log(`[spike] capturing (mode=screenshot) ${args.url} → ${backgroundPath}`);
+    const capture = await captureWebsite({ url: args.url, outputPath: backgroundPath });
+    backgroundHeight = capture.height;
+    // eslint-disable-next-line no-console
+    console.log(`[spike] captured: ${capture.width}×${capture.height} in ${capture.durationMs} ms`);
+  }
 
   const job: RenderJob = {
-    screenshotPath: capture.pngPath,
-    screenshotHeight: capture.height,
+    screenshotPath: backgroundPath,
+    screenshotHeight: backgroundHeight,
     circleSourcePath: args.circle,
     circleHasAudio: args.circleHasAudio,
     audioPath: args.audio,
     outputPath: args.output,
     config,
+    backgroundKind,
   };
 
   // eslint-disable-next-line no-console
@@ -202,4 +236,5 @@ run()
   })
   .finally(async () => {
     await shutdownCapturePool();
+    await shutdownRecordPool();
   });

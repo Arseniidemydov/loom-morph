@@ -122,6 +122,55 @@ describe('buildFilterGraph', () => {
     expect(g.filterComplex).toContain('(3-2*((t-');
   });
 
+  // ─── backgroundKind=video skips the time-based pan ──────────────────────
+
+  it('backgroundKind=video emits a center-crop background stage with no pan expression', () => {
+    const g = buildFilterGraph({ ...base, backgroundKind: 'video' });
+    // Center crop both axes — no time-based panY.
+    expect(g.filterComplex).toContain(
+      '[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080:(iw-1920)/2:(ih-1080)/2,setsar=1,fps=30[bg]',
+    );
+    // No `if(lt(t\,…)` segment cascade in the background stage.
+    const bgPart = g.filterComplex.split(';')[0]!;
+    expect(bgPart).not.toMatch(/if\(lt\(t/);
+  });
+
+  it('default (no backgroundKind) keeps the segmented pan behavior', () => {
+    const g = buildFilterGraph(base);
+    const bgPart = g.filterComplex.split(';')[0]!;
+    expect(bgPart).toMatch(/if\(lt\(t\\,\d/); // pan expression present
+  });
+
+  it('buildFfmpegArgs with backgroundKind=video drops the -loop/-t flags for input 0', () => {
+    const job: RenderJob = {
+      screenshotPath: '/tmp/recording.webm',
+      screenshotHeight: 800,
+      circleSourcePath: '/tmp/circle.png',
+      circleHasAudio: false,
+      outputPath: '/output/out.mp4',
+      backgroundKind: 'video',
+      config: {
+        durationSec: 5,
+        resolution: '720p',
+        circlePosition: 'bottom-right',
+        circleSize: 'M',
+        circleMargin: 20,
+        filenameTemplate: '',
+      },
+    };
+    const args = buildFfmpegArgs(job, { maskDir: '/masks' });
+    // The first -i should be the recording, NOT preceded by -loop/-t.
+    const firstI = args.indexOf('-i');
+    expect(args[firstI + 1]).toBe('/tmp/recording.webm');
+    expect(args.slice(0, firstI)).toEqual(['-y']); // only -y before -i
+    // The mask still gets the loop+t (it's still a still image).
+    // Just before the mask path we expect: -loop 1 -framerate 30 -t 5 -i <mask>.
+    const maskPathIdx = args.findIndex((a) => a.endsWith('/circle-mask-280.png'));
+    expect(maskPathIdx).toBeGreaterThan(0);
+    expect(args[maskPathIdx - 1]).toBe('-i');
+    expect(args.slice(maskPathIdx - 7, maskPathIdx - 1)).toEqual(['-loop', '1', '-framerate', '30', '-t', '5']);
+  });
+
   it('30s 1080p tall page keeps the same segment timeline regardless of width', () => {
     // Two configs that differ ONLY in caller-irrelevant ways should generate
     // the same scroll TIMING (segment start/end times) — the seed is built

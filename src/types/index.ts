@@ -84,14 +84,20 @@ export type CaptureFn = (input: CaptureInput) => Promise<CaptureResult>;
 
 // ────────────────────── render worker ──────────────────────
 
+export type BackgroundKind = 'image' | 'video'; // D-019
+
 export interface RenderJob {
   screenshotPath: string;
-  screenshotHeight: number; // for pan distance calculation
+  screenshotHeight: number; // for pan distance calculation (image kind)
   circleSourcePath: string; // image or video
   circleHasAudio: boolean; // determines amix path
   audioPath?: string; // optional MP3
   outputPath: string;
   config: BatchConfig;
+  // D-019 — when 'video', screenshotPath points at a recorded WebM/MP4 of
+  // the live page; the filter graph centers + scales without a time-based
+  // pan. Default 'image'.
+  backgroundKind?: BackgroundKind;
 }
 
 export interface RenderConfig {
@@ -107,6 +113,7 @@ export interface RenderConfig {
   circleCropY?: number;
   circleHasAudio: boolean;
   audioMp3Present: boolean; // D-015 — separate flag so the four audio paths are decidable
+  backgroundKind?: BackgroundKind; // D-019; default 'image'
 }
 
 export interface RenderResult {
