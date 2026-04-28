@@ -25,3 +25,9 @@ data/
 
 # Test coverage
 coverage/
+
+# Test fixture artifacts (regenerated each run)
+tests/fixtures/render/*
+!tests/fixtures/render/.gitkeep
+tests/fixtures/capture/*
+!tests/fixtures/capture/.gitkeep

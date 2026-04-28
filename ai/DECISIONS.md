@@ -157,3 +157,15 @@ Supersedes: D-XXX (if applicable)
 **Alternatives considered:** Hard-code paths inside the orchestrator (rejected — couples orchestration to FS layout); attach paths to each `LeadInput` (rejected — pollutes the user-facing CSV-row type with internal plumbing).
 
 **Action:** Update `/ai/INTERFACES.md` § "Orchestrator contract" to show `paths` in the deps. The orchestrator now treats `paths` as a required dep.
+
+---
+
+## D-015 — Replace `RenderConfig.hasAudioTrack` with `audioMp3Present` (2026-04-28)
+
+**Decision:** In `RenderConfig`, replace the single `hasAudioTrack: boolean` field with `audioMp3Present: boolean`. The pure filter-graph builder now decides the audio path from `(circleHasAudio, audioMp3Present)`.
+
+**Why:** The four audio paths in the filter graph are: both → `amix`; circle-only → circle audio passes through; mp3-only → mp3 passes through; neither → silent (`-an`). With only `circleHasAudio` and `hasAudioTrack`, the case "both present" can't be distinguished from "circle present, mp3 absent" — both have `circleHasAudio=true && hasAudioTrack=true`. Adding a separate `audioMp3Present` makes all four paths decidable.
+
+**Tradeoff:** Tiny contract surface change. Caller must set both booleans explicitly; no implicit derivation.
+
+**Alternatives considered:** Keep `hasAudioTrack` and treat any ambiguity as "both" (rejected — silently picks the wrong filter graph for circle-only inputs); add `audioMp3Present` as an additional field alongside `hasAudioTrack` (rejected — redundant, two flags describe the same axis).

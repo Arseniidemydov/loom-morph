@@ -8,40 +8,7 @@ Unresolved questions, broken assumptions, missing credentials, failing tests, de
 
 ---
 
-## B-002 — `ffmpeg` not installed on dev machine (CONFIRMED blocking)
-
-**Raised by:** Lead Agent
-**Date:** 2026-04-28
-**Status:** open — confirmed missing (`ffmpeg -version` → command not found)
-**Affected tasks:** TASK-003 (render worker), TASK-005 (CLI spike)
-**Does NOT block:** TASK-001 (scaffolding), TASK-002 (capture), TASK-004 (orchestrator — uses mocks)
-
-**Problem:** The render worker shells out to the system `ffmpeg` binary. Verified missing via `command -v ffmpeg`.
-
-**Needed action (human):** install ffmpeg before TASK-003 can start.
-
-```bash
-brew install ffmpeg
-```
-
-Then verify with `ffmpeg -version`. Lead Agent will not run install commands automatically.
-
-**Resolution criteria:** `ffmpeg -version` runs cleanly on the dev machine; B-002 moves to resolved.
-
-**Workaround in the meantime:** TASK-001, TASK-002, and TASK-004 can run in parallel; TASK-003 starts as soon as ffmpeg lands; TASK-005 sequences after TASK-002 + TASK-003.
-
----
-
-## B-003 — Confirm Playwright browser install permission (open)
-
-**Raised by:** Lead Agent
-**Date:** 2026-04-28
-**Status:** open
-**Affected tasks:** TASK-001, TASK-002
-
-**Problem:** Playwright's first-time install pulls ~200MB of Chromium binaries into `~/Library/Caches/ms-playwright/` (macOS). Some sandboxed environments block this.
-
-**Needed action (human):** confirm the dev machine can run `npx playwright install chromium`. If not, raise it before TASK-001 starts.
+_(no open blockers)_
 
 ---
 
@@ -51,6 +18,16 @@ Then verify with `ffmpeg -version`. Lead Agent will not run install commands aut
 
 **Resolution:** Repo was initialized; current branch is `chore/scaffolding` with the initial coordination commit `93bafbb`. TASK-001 work commits onto this branch.
 **Notes:** Going forward, downstream tasks should create branches from `main` once TASK-001 merges.
+
+## B-002 — `ffmpeg` not installed on dev machine (resolved 2026-04-28)
+
+**Resolution:** `brew install ffmpeg` completed; `ffmpeg 8.1` available on PATH at `/opt/homebrew/bin/ffmpeg`. Render integration tests now run real ffmpeg and pass (4/4).
+**Notes:** Output is H.264 + AAC + yuv420p with `+faststart` per D-005.
+
+## B-003 — Confirm Playwright browser install permission (resolved 2026-04-28)
+
+**Resolution:** `npx playwright install chromium` completed successfully (~200 MB into `~/Library/Caches/ms-playwright/`). Capture worker (TASK-002) is unblocked.
+**Notes:** No sandboxing issues encountered.
 
 <!-- Template:
 

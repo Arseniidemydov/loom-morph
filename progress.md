@@ -27,8 +27,13 @@ Format:
   - **D-013** — added `@types/better-sqlite3` to dev deps.
   - **D-014** — `OrchestratorDeps.paths` is required; orchestrator stays decoupled from `src/lib/storage.ts`.
 
+- **MERGED:** `chore/scaffolding` → `main` (`5385699`), `feature/orchestrator-state` → `main` (`0e97f85`). Both fast-forward.
+- **RESOLVED B-002:** `ffmpeg` 8.1 installed via Homebrew (`/opt/homebrew/bin/ffmpeg`).
+- **RESOLVED B-003:** `npx playwright install chromium` succeeded.
+- **STARTED: TASK-003 — render worker.** Branch `feature/pipeline-render`.
+- **FINISHED: TASK-003.** `src/pipeline/filter-graph.ts` (pure `buildFilterGraph` + `buildFfmpegArgs`; smoothstep pan, four corner overlays, four audio paths, circle alpha via pre-generated mask), `src/pipeline/render.ts` (spawns ffmpeg, streams stderr, last-50 tail on non-zero exit, optional kill timer). 36/36 vitest green including real-ffmpeg integration: produces 1280×720 H.264 yuv420p MP4 with valid AAC stream when MP3 is supplied. **D-015** recorded: `RenderConfig.hasAudioTrack` → `audioMp3Present` so the four audio paths are decidable.
+
 ### Next up
-- Human review/merge of `chore/scaffolding` then `feature/orchestrator-state` (in that order).
-- TASK-002 (capture) — unblocked once B-003 (Playwright Chromium install permission) confirmed.
-- TASK-003 (render) — unblocked once B-002 (`ffmpeg` install) is resolved.
-- TASK-005 (Phase 1 CLI spike) sequences after TASK-002 + TASK-003 merge; will wire those into a concrete `OrchestratorPaths` backed by `src/lib/storage.ts`.
+- Human review/merge of `feature/pipeline-render` (entry in [`ai/MERGE_QUEUE.md`](ai/MERGE_QUEUE.md)).
+- TASK-002 (capture) — Playwright worker; will branch from `main` after this merges.
+- TASK-005 (Phase 1 CLI spike) sequences after TASK-002 + TASK-003 land; wires up a concrete `OrchestratorPaths` backed by `src/lib/storage.ts`.

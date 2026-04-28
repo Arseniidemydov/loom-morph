@@ -177,7 +177,7 @@ export interface RenderConfig {
   circleSize: CircleSize;
   circleMargin: number;
   circleHasAudio: boolean;
-  hasAudioTrack: boolean;       // either circle audio or mp3 present
+  audioMp3Present: boolean;     // D-015 — separate flag so the four audio paths are decidable
 }
 
 export interface RenderResult {
