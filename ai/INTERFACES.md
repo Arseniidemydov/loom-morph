@@ -72,7 +72,7 @@ Production:
 - `sharp` — image generation for the build-time circle mask script (D-012; not imported by runtime workers)
 
 Dev:
-- `typescript`, `@types/node`, `@types/react`, `@types/react-dom`, `@types/papaparse`, `@types/archiver`
+- `typescript`, `@types/node`, `@types/react`, `@types/react-dom`, `@types/papaparse`, `@types/archiver`, `@types/better-sqlite3` (D-013)
 - `vitest` — test runner
 - `@vitest/ui` (optional)
 - `eslint`, `eslint-config-next`
@@ -327,14 +327,23 @@ Where:
 `src/orchestrator/orchestrator.ts` exports:
 
 ```ts
+// Path resolver injected by the caller (D-014). The orchestrator stays free
+// of filesystem-layout assumptions; CLI / API construct paths from src/lib/storage.ts.
+export interface OrchestratorPaths {
+  screenshotFor(batchId: string, leadId: string): string;
+  outputFor(batchId: string, leadId: string, lead: LeadInput, filename: string): string;
+}
+
 export interface OrchestratorDeps {
   capture: CaptureFn;
   render: RenderFn;
   db: DbClient;
+  paths: OrchestratorPaths;     // required (D-014)
   clock?: () => number;
   capturePoolSize?: number;     // default 6
   renderPoolSize?: number;      // default min(cpus, 8)
   retries?: { capture: number };// default { capture: 1 }
+  uuid?: () => string;          // override for deterministic tests
 }
 
 export class BatchOrchestrator {

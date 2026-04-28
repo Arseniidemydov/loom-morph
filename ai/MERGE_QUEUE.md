@@ -8,6 +8,29 @@ Branches awaiting review and merge to `main`. The Lead Agent maintains this file
 
 ## Ready for review
 
+### Branch: feature/orchestrator-state
+- Owner: orchestrator-agent (Lead Agent acting in role)
+- Task: TASK-004
+- Status: ready for review
+- Branched from: `chore/scaffolding` (not yet merged to `main`); cherry-pick after `chore/scaffolding` lands, or merge in dependency order.
+- Tests run:
+  - `npm run typecheck` — pass
+  - `npm run test` — pass (22/22 across db, pool, events, orchestrator)
+- Files:
+  - `src/db/{schema.sql,migrations.ts,client.ts}` — `DbClient` + `createDbClient()` over better-sqlite3 (in-memory in tests, WAL on disk in prod)
+  - `src/orchestrator/{pool.ts,events.ts,orchestrator.ts}` — concurrency pool (p-limit), AsyncIterable event channel, `BatchOrchestrator` class
+  - `src/db/__tests__/client.test.ts`, `src/orchestrator/__tests__/{pool,events,orchestrator}.test.ts`
+  - `vitest.config.ts` (with `@/*` alias)
+- Risks:
+  - low–medium
+  - Two contract-extension decisions vs. INTERFACES.md as originally written; both already recorded:
+    1. **D-013** — added `@types/better-sqlite3` to dev deps (was missing).
+    2. **D-014** — `OrchestratorDeps.paths` is now required; resolves the original gap of how the orchestrator learns the on-disk layout without coupling to `src/lib/storage.ts`.
+  - The orchestrator runs capture & render concurrently in independent pools per spec; tests cover concurrency caps, retry policy (1 retry on `timeout`/`network`, 0 on `bot-blocked`), per-lead failure isolation, all-fail batch, event ordering (`batch-started` first, `batch-completed` last), filename templating fallback. Tests do not exercise process-restart / cancellation — explicitly out of v1 scope per PLAN.md.
+- Depends on: TASK-001 (in queue, not yet merged)
+- Recommended merge order: 2 (after TASK-001)
+- Reviewer status: pending
+
 ### Branch: chore/scaffolding
 - Owner: scaffolding-agent (Lead Agent acting in role)
 - Task: TASK-001

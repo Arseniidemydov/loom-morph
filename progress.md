@@ -22,7 +22,13 @@ Format:
   - `CaptureError.cause` carries `override` to satisfy `noImplicitOverride`; INTERFACES.md updated to match.
 - **RESOLVED B-001:** repo was initialized; on branch `chore/scaffolding` with the coordination scaffold commit. Moved to the resolved archive in `ai/BLOCKERS.md`.
 
+- **STARTED: TASK-004 — orchestrator + SQLite state.** Branch `feature/orchestrator-state` (off `chore/scaffolding`).
+- **FINISHED: TASK-004.** `src/db/{schema.sql,migrations.ts,client.ts}` (better-sqlite3 wrapper, in-memory tests / WAL on disk), `src/orchestrator/{pool.ts,events.ts,orchestrator.ts}` (p-limit-backed pool, async event channel, `BatchOrchestrator` with capture+render pools, retry policy, per-lead failure isolation), `vitest.config.ts`. 22/22 tests green: db CRUD, pool concurrency caps, event ordering & emit-after-close, orchestrator happy path / partial failure / all-fail / capture retry on timeout / no retry on bot-blocked / capture-pool cap honored / filename template + fallback. Two contract extensions vs. the original INTERFACES.md, both recorded:
+  - **D-013** — added `@types/better-sqlite3` to dev deps.
+  - **D-014** — `OrchestratorDeps.paths` is required; orchestrator stays decoupled from `src/lib/storage.ts`.
+
 ### Next up
-- Human review/merge of `chore/scaffolding` (entry in [`ai/MERGE_QUEUE.md`](ai/MERGE_QUEUE.md)).
-- After merge: TASK-002 (capture), TASK-003 (render — gated on B-002 / install `ffmpeg`), TASK-004 (orchestrator) can run in parallel on isolated branches.
-- TASK-005 (Phase 1 CLI spike) sequences after TASK-002 + TASK-003 merge.
+- Human review/merge of `chore/scaffolding` then `feature/orchestrator-state` (in that order).
+- TASK-002 (capture) — unblocked once B-003 (Playwright Chromium install permission) confirmed.
+- TASK-003 (render) — unblocked once B-002 (`ffmpeg` install) is resolved.
+- TASK-005 (Phase 1 CLI spike) sequences after TASK-002 + TASK-003 merge; will wire those into a concrete `OrchestratorPaths` backed by `src/lib/storage.ts`.

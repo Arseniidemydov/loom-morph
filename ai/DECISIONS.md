@@ -131,3 +131,29 @@ Supersedes: D-XXX (if applicable)
 **Alternatives considered:** Hand-write a PNG via raw zlib + CRC (zero deps, ~200 LOC of fiddly chunk encoding); use `pngjs` (pure JS, slower but smaller). Both rejected — `sharp` is one line and the mask is a build artifact, not a hot path.
 
 **Action:** Update `/ai/INTERFACES.md` § "Dependency manifest" to list `sharp`. No code change required (already in `package.json`).
+
+---
+
+## D-013 — Add `@types/better-sqlite3` to dev dependencies (2026-04-28)
+
+**Decision:** Add `@types/better-sqlite3` to dev deps. Required for `src/db/client.ts` and `src/db/migrations.ts` to typecheck under strict mode.
+
+**Why:** `better-sqlite3` ships no built-in types. The original v1 manifest in INTERFACES.md listed the runtime dep but omitted the types package — same class of oversight as D-012.
+
+**Tradeoff:** None worth noting. Dev-only.
+
+**Action:** Update `/ai/INTERFACES.md` § "Dependency manifest" to list `@types/better-sqlite3`.
+
+---
+
+## D-014 — Inject `paths` resolver into the orchestrator (2026-04-28)
+
+**Decision:** Extend `OrchestratorDeps` with a required `paths: OrchestratorPaths` field. `OrchestratorPaths` is a two-method interface — `screenshotFor(batchId, leadId)` and `outputFor(batchId, leadId, lead, filename)` — that returns absolute paths the orchestrator hands to capture/render.
+
+**Why:** The original orchestrator contract in INTERFACES.md said the runtime needs to know the on-disk layout but never showed how it learns about it. Hard-coding `src/lib/storage.ts` paths inside the orchestrator would couple it to the filesystem layout (and to a module that doesn't yet exist), and would force tests to do real I/O. Injecting a thin resolver keeps the orchestrator pure and lets tests pass `(/tmp/.../x.png, /output/.../y.mp4)` strings without touching disk.
+
+**Tradeoff:** The CLI spike (TASK-005) and the Phase 3 API both have to construct an `OrchestratorPaths` from `src/lib/storage.ts`. Tiny boilerplate, well-contained.
+
+**Alternatives considered:** Hard-code paths inside the orchestrator (rejected — couples orchestration to FS layout); attach paths to each `LeadInput` (rejected — pollutes the user-facing CSV-row type with internal plumbing).
+
+**Action:** Update `/ai/INTERFACES.md` § "Orchestrator contract" to show `paths` in the deps. The orchestrator now treats `paths` as a required dep.

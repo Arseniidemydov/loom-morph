@@ -15,7 +15,7 @@ Active task contracts for the Loom Morph build. The Lead Agent owns this file. I
 | TASK-001 | Project scaffolding & shared types     | scaffolding-agent   | review    | `chore/scaffolding`                  | —          |
 | TASK-002 | Capture worker (Playwright)            | capture-agent       | proposed  | `feature/pipeline-capture`           | TASK-001   |
 | TASK-003 | Render worker (FFmpeg filter graph)    | render-agent        | proposed  | `feature/pipeline-render`            | TASK-001   |
-| TASK-004 | Orchestrator + SQLite state            | orchestrator-agent  | proposed  | `feature/orchestrator-state`         | TASK-001   |
+| TASK-004 | Orchestrator + SQLite state            | orchestrator-agent  | review    | `feature/orchestrator-state`         | TASK-001   |
 | TASK-005 | Phase 1 CLI spike (integration)        | integration-agent   | proposed  | `feature/cli-spike`                  | TASK-002, TASK-003 |
 
 TASK-002, TASK-003, TASK-004 may run in parallel after TASK-001 merges. TASK-005 sequences after 002 + 003 land.
