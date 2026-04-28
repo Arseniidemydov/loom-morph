@@ -45,16 +45,19 @@ export function buildFilterGraph(config: RenderConfig): FilterGraph {
   const margin = config.circleMargin;
   const { x: X, y: Y } = overlayCoords(config.circlePosition, W, H, C, margin);
 
-  // Smoothstep ease: (t/D)^2 * (3 - 2*(t/D)). Pan distance = SH - H.
-  // Pre-multiply so the expression is short and self-contained.
-  // FFmpeg's expression parser treats single quotes as literal grouping in
-  // arg parsing, but inside the filter graph string they are not special —
-  // commas would be, but our crop expression has no commas (wrapping
-  // arithmetic in parentheses keeps it within the single arg).
-  const panY = `(${SH}-${H})*(t/${D})*(t/${D})*(3-2*(t/${D}))`;
+  // Pan expression is in fractional units of `(ih-H)` so it works regardless
+  // of the input screenshot's width or height — see buildHumanScrollExpression.
+  const panY = buildHumanScrollExpression(SH, H, D);
 
+  // Scale the screenshot so it covers the output frame on both axes
+  // (`force_original_aspect_ratio=increase` ⇒ both iw≥W and ih≥H, aspect
+  // preserved). Then center-crop horizontally — `(iw-W)/2` is 0 in the
+  // common case where iw == W (e.g. 1280-wide capture → 1080p ⇒ scaled to
+  // 1920-wide ⇒ iw == W). Vertical position is the time-based pan.
+  // Without this scale step, a 1280-wide capture rendered to 1920×1080
+  // failed because crop=1920:1080 needs iw ≥ 1920 / ih ≥ 1080.
   const lines = [
-    `[0:v]crop=${W}:${H}:0:${panY},scale=${W}:${H},setsar=1,fps=30[bg];`,
+    `[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-${W})/2:${panY},setsar=1,fps=30[bg];`,
     `[1:v]scale=${C}:${C}:force_original_aspect_ratio=increase,crop=${C}:${C}[c_raw];`,
     `[c_raw][2:v]alphamerge[circle];`,
     `[bg][circle]overlay=${X}:${Y}:shortest=0[v]`,
@@ -69,6 +72,130 @@ export function buildFilterGraph(config: RenderConfig): FilterGraph {
     videoMap: '[v]',
     audioMap: audio ? '[a]' : undefined,
   };
+}
+
+interface ScrollSegment {
+  start: number;
+  end: number;
+  // Fractions of (ih - viewportHeight) at runtime, NOT absolute pixels. The
+  // FFmpeg expression multiplies these by `(ih-H)` so the same graph adapts
+  // to whatever the post-scale input height turns out to be.
+  from: number;
+  to: number;
+}
+
+function buildHumanScrollExpression(
+  screenshotHeight: number,
+  viewportHeight: number,
+  durationSec: number,
+): string {
+  if (durationSec <= 0) return '0';
+
+  const seed = hashNumbers(screenshotHeight, viewportHeight, durationSec);
+  const stepCount = 2 + (seed % 3); // 2-4 scrolls, never a full robotic sweep.
+  const travelRatio = 0.32 + pseudo(seed, 1) * 0.42; // stop around 32-74% down.
+  const initialPause = round1(1 + pseudo(seed, 2) * 2);
+  const usable = Math.max(1, durationSec - initialPause - 1);
+  const scrollTotal = usable * (0.42 + pseudo(seed, 3) * 0.18);
+  const pauseTotal = Math.max(0.5, usable - scrollTotal);
+
+  // Build segments in fractional space [0..travelRatio]. At runtime each
+  // fraction is multiplied by `(ih-H)`, so a tall page produces a long pan
+  // and a near-viewport-sized page produces a tiny pan — both safely.
+  const segments: ScrollSegment[] = [];
+  let t = initialPause;
+  let yFrac = 0;
+  for (let i = 0; i < stepCount; i += 1) {
+    const remaining = stepCount - i;
+    const scrollWeight = 0.75 + pseudo(seed, 10 + i) * 0.7;
+    const scrollDur = round1((scrollTotal / remaining) * scrollWeight);
+    const pauseDur = round1(
+      i === stepCount - 1 ? 0 : (pauseTotal / remaining) * (0.7 + pseudo(seed, 20 + i) * 0.9),
+    );
+    const remainingTravelFrac = travelRatio - yFrac;
+    const stepFrac =
+      i === stepCount - 1
+        ? remainingTravelFrac
+        : Math.max(
+            0.001,
+            (remainingTravelFrac / remaining) * (0.75 + pseudo(seed, 30 + i) * 0.85),
+          );
+    const nextYFrac = clampFraction(yFrac + stepFrac, 0, travelRatio);
+    const end = Math.min(durationSec, t + scrollDur);
+    segments.push({
+      start: round1(t),
+      end: round1(end),
+      from: round4(yFrac),
+      to: round4(nextYFrac),
+    });
+    yFrac = nextYFrac;
+    t = Math.min(durationSec, end + pauseDur);
+    if (t >= durationSec - 0.5) break;
+  }
+
+  return nestedScrollExpression(segments, viewportHeight);
+}
+
+function nestedScrollExpression(
+  segments: ScrollSegment[],
+  viewportHeight: number,
+): string {
+  // FFmpeg expression for current max pan after scaling. ih here is the
+  // crop filter's input height — i.e. the screenshot AFTER `scale=W:H:
+  // force_original_aspect_ratio=increase`. Always ≥ viewportHeight.
+  const maxPan = `(ih-${viewportHeight})`;
+  const fracExpr = (frac: number): string => {
+    if (frac === 0) return '0';
+    return `${maxPan}*${formatFrac(frac)}`;
+  };
+
+  let expr = fracExpr(segments.at(-1)?.to ?? 0);
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    const s = segments[i]!;
+    const p = `((t-${s.start})/${Math.max(0.1, round1(s.end - s.start))})`;
+    const fromExpr = fracExpr(s.from);
+    const deltaExpr = fracExpr(round4(s.to - s.from));
+    const eased = `${fromExpr}+(${deltaExpr})*${p}*${p}*(3-2*${p})`;
+    expr = `if(lt(t\\,${s.start})\\,${fromExpr}\\,if(lt(t\\,${s.end})\\,${eased}\\,${expr}))`;
+  }
+  return expr;
+}
+
+function clampFraction(value: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, value));
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10000) / 10000;
+}
+
+function formatFrac(n: number): string {
+  // Trim trailing zeros so the filter string stays readable; FFmpeg's
+  // expression parser accepts plain decimals.
+  return n.toFixed(4).replace(/\.?0+$/, '') || '0';
+}
+
+function hashNumbers(...values: number[]): number {
+  let hash = 2166136261;
+  for (const value of values) {
+    hash ^= Math.round(value * 100);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function pseudo(seed: number, salt: number): number {
+  let x = seed + Math.imul(salt + 1, 0x9e3779b9);
+  x ^= x >>> 16;
+  x = Math.imul(x, 0x7feb352d);
+  x ^= x >>> 15;
+  x = Math.imul(x, 0x846ca68b);
+  x ^= x >>> 16;
+  return (x >>> 0) / 0xffffffff;
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
 }
 
 function overlayCoords(

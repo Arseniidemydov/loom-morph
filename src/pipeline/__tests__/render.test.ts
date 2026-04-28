@@ -135,6 +135,80 @@ maybe('render integration (real ffmpeg)', () => {
     expect(audio!.codec_name).toBe('aac');
   }, 60_000);
 
+  it('renders a 1280×800 capture to 1080p — pre-scale + ih-based pan must work', async () => {
+    // This is the exact case the UI used to hit before the filter-graph fix:
+    // a viewport-sized capture (1280-wide) rendered at 1080p output (1920×1080).
+    // Without pre-scaling, ffmpeg errored out with "crop input width less than
+    // crop width". With the fix, we expect a clean 1920×1080 H.264 MP4.
+    const shotPath = path.join(FIXTURE_DIR, 'shot-1280x800.png');
+    const circlePath = path.join(FIXTURE_DIR, 'circle.png');
+    const outPath = path.join(OUT_DIR, 'narrow-to-1080p.mp4');
+
+    await makeShotPng(shotPath, 800);   // 1280×800 — same width as the makeShotPng default
+    await makeCirclePng(circlePath);
+
+    const job: RenderJob = {
+      screenshotPath: shotPath,
+      screenshotHeight: 800,
+      circleSourcePath: circlePath,
+      circleHasAudio: false,
+      outputPath: outPath,
+      config: {
+        durationSec: 2,
+        resolution: '1080p',
+        circlePosition: 'bottom-right',
+        circleSize: 'M',
+        circleMargin: 40,
+        filenameTemplate: '',
+      },
+    };
+
+    const render = createRender({ maskDir: MASK_DIR });
+    const result = await render(job);
+    expect(result.outputPath).toBe(outPath);
+
+    const probe = ffprobeJson(outPath);
+    const video = probe.streams.find((s) => s.codec_type === 'video');
+    expect(video).toBeDefined();
+    expect(video!.codec_name).toBe('h264');
+    expect(video!.width).toBe(1920);
+    expect(video!.height).toBe(1080);
+  }, 60_000);
+
+  it('renders a 1280×800 capture to 720p — regression check that 720p still works', async () => {
+    // Same input dims as above but the original happy path — guard against
+    // the fix accidentally regressing the resolution that previously worked.
+    const shotPath = path.join(FIXTURE_DIR, 'shot-1280x800.png');
+    const circlePath = path.join(FIXTURE_DIR, 'circle.png');
+    const outPath = path.join(OUT_DIR, 'narrow-to-720p.mp4');
+
+    await makeShotPng(shotPath, 800);
+    await makeCirclePng(circlePath);
+
+    const job: RenderJob = {
+      screenshotPath: shotPath,
+      screenshotHeight: 800,
+      circleSourcePath: circlePath,
+      circleHasAudio: false,
+      outputPath: outPath,
+      config: {
+        durationSec: 2,
+        resolution: '720p',
+        circlePosition: 'top-left',
+        circleSize: 'S',
+        circleMargin: 20,
+        filenameTemplate: '',
+      },
+    };
+
+    const render = createRender({ maskDir: MASK_DIR });
+    await render(job);
+    const probe = ffprobeJson(outPath);
+    const video = probe.streams.find((s) => s.codec_type === 'video');
+    expect(video!.width).toBe(1280);
+    expect(video!.height).toBe(720);
+  }, 60_000);
+
   it('rejects with RenderError when ffmpeg exits non-zero (missing input)', async () => {
     const job: RenderJob = {
       screenshotPath: '/nonexistent/shot.png',
