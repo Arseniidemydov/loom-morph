@@ -117,3 +117,17 @@ Supersedes: D-XXX (if applicable)
 **Decision:** Implementation agents commit to local branches only. No `git push`, no PRs, no merging to `main`. Human is the merge authority. Lead Agent maintains `/ai/MERGE_QUEUE.md` as the staging area for review.
 
 **Why:** Avoid pushing half-baked branches to a remote. Keep the human in the loop on every public action.
+
+---
+
+## D-012 — Add `sharp` to the dependency manifest (2026-04-28)
+
+**Decision:** Add `sharp` to the production dependency manifest. Used solely by `scripts/generate-mask.ts` to produce the three pre-generated circle masks under `public/`.
+
+**Why:** D-007 mandates pre-generated PNG masks (square, transparent outside, opaque inside the inscribed circle). `sharp` is the standard Node-side image generator and produces correct alpha channels in one short script. The original v1 manifest in INTERFACES.md was authored before `generate-mask.ts` was written and silently omitted it.
+
+**Tradeoff:** `sharp` ships native binaries (libvips). Adds ~30 MB to `node_modules`. Acceptable: it is dev/build-time only; runtime workers (capture, render) do not import it.
+
+**Alternatives considered:** Hand-write a PNG via raw zlib + CRC (zero deps, ~200 LOC of fiddly chunk encoding); use `pngjs` (pure JS, slower but smaller). Both rejected — `sharp` is one line and the mask is a build artifact, not a hot path.
+
+**Action:** Update `/ai/INTERFACES.md` § "Dependency manifest" to list `sharp`. No code change required (already in `package.json`).

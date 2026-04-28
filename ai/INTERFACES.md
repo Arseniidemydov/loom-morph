@@ -69,6 +69,7 @@ Production:
 - `papaparse` — CSV parsing
 - `archiver` — streaming ZIP (used in Phase 3)
 - `p-limit` — concurrency-capped Promise pool
+- `sharp` — image generation for the build-time circle mask script (D-012; not imported by runtime workers)
 
 Dev:
 - `typescript`, `@types/node`, `@types/react`, `@types/react-dom`, `@types/papaparse`, `@types/archiver`
@@ -149,7 +150,7 @@ export class CaptureError extends Error {
   constructor(
     public reason: CaptureFailureReason,
     message: string,
-    public cause?: unknown,
+    public override cause?: unknown,    // `override` required by tsconfig's noImplicitOverride
   ) { super(message); this.name = 'CaptureError'; }
 }
 

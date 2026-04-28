@@ -12,7 +12,7 @@ Active task contracts for the Loom Morph build. The Lead Agent owns this file. I
 
 | ID       | Title                                  | Owner               | Status    | Branch                               | Depends on |
 |----------|----------------------------------------|---------------------|-----------|--------------------------------------|------------|
-| TASK-001 | Project scaffolding & shared types     | scaffolding-agent   | ready     | `chore/scaffolding`                  | —          |
+| TASK-001 | Project scaffolding & shared types     | scaffolding-agent   | review    | `chore/scaffolding`                  | —          |
 | TASK-002 | Capture worker (Playwright)            | capture-agent       | proposed  | `feature/pipeline-capture`           | TASK-001   |
 | TASK-003 | Render worker (FFmpeg filter graph)    | render-agent        | proposed  | `feature/pipeline-render`            | TASK-001   |
 | TASK-004 | Orchestrator + SQLite state            | orchestrator-agent  | proposed  | `feature/orchestrator-state`         | TASK-001   |
@@ -28,7 +28,7 @@ Phase 3 (UI) tasks will be authored once Phase 1 spike is green.
 
 **Agent name:** scaffolding-agent
 **Branch/worktree:** `chore/scaffolding`
-**Status:** ready
+**Status:** review (awaiting human merge to `main`)
 
 **Task:** Initialize the Node/TypeScript project, install foundational dependencies, lay down the agreed directory layout, and define the shared type surface that downstream agents will program against.
 

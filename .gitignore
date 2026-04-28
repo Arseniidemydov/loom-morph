@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+.next/
+dist/
+build/
+scripts/.dist/
+*.tsbuildinfo
+
+# Generated artifacts
+output/
+tmp/
+uploads/
+data/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+*.log
+
+# Test coverage
+coverage/

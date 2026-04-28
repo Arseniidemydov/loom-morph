@@ -8,23 +8,6 @@ Unresolved questions, broken assumptions, missing credentials, failing tests, de
 
 ---
 
-## B-001 — Repository is not yet a git repo (open)
-
-**Raised by:** Lead Agent
-**Date:** 2026-04-28
-**Status:** open
-**Affected tasks:** TASK-001 (and indirectly all downstream)
-
-**Problem:** The working directory `/Users/arsenii/Desktop/loom morph` is not a git repository. The coordination model in this project depends on per-task branches and worktrees; without git initialized, the model can't be enforced.
-
-**Needed action (human):** confirm the project should be initialized as a git repo, then either:
-- run `git init` here and let TASK-001 commit the scaffolding, or
-- give Lead Agent permission to run `git init` as the first step of TASK-001.
-
-**Note:** because this is a destructive-ish action on a directory the user controls (creates `.git/`, sets identity), Lead Agent will not run `git init` without explicit go-ahead.
-
----
-
 ## B-002 — `ffmpeg` not installed on dev machine (CONFIRMED blocking)
 
 **Raised by:** Lead Agent
@@ -64,7 +47,10 @@ Then verify with `ffmpeg -version`. Lead Agent will not run install commands aut
 
 ## Resolved / wont-fix archive
 
-_(empty — entries move here once resolved, with resolution date and notes)_
+## B-001 — Repository is not yet a git repo (resolved 2026-04-28)
+
+**Resolution:** Repo was initialized; current branch is `chore/scaffolding` with the initial coordination commit `93bafbb`. TASK-001 work commits onto this branch.
+**Notes:** Going forward, downstream tasks should create branches from `main` once TASK-001 merges.
 
 <!-- Template:
 
