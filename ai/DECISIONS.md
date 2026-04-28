@@ -181,3 +181,36 @@ Supersedes: D-XXX (if applicable)
 **Tradeoff:** ~25 MB more in `node_modules`. Acceptable for a dev tool used by a single script.
 
 **Alternatives considered:** Rewriting every pipeline module to use relative imports (rejected — large diff, churn for no real gain); writing a custom Node loader hook for `@/*` (rejected — reinvents `tsx` worse); compiling the spike like `generate-mask` (rejected — would need to compile the entire transitive dep tree of pipeline modules).
+
+---
+
+## D-017 — Optional `circleCropScale / circleCropX / circleCropY` on BatchConfig (2026-04-28)
+
+**Decision:** Add three optional numeric fields to `BatchConfig` (and the derived `RenderConfig`):
+- `circleCropScale?: number` — clamped to [1, 2.5]; how much to zoom the circle source before cropping. Default 1 = no zoom.
+- `circleCropX?: number` — clamped to [-100, 100]; horizontal nudge of the crop in fractional units (50 ≈ ¾ of the way right).
+- `circleCropY?: number` — same for vertical.
+
+When all three are at defaults, the filter graph emits the unchanged single-line `scale=N:N:force_original_aspect_ratio=increase,crop=N:N`. When any is non-default, it emits a two-step `scale*scale,crop=N:N:Xexpr:Yexpr`.
+
+**Why:** Real Loom-style talking-head videos are often horizontally framed (e.g. the example asset is 2092×1080 with the speaker off-center). The previous filter centered the crop, which sometimes cuts off the speaker. Letting the user nudge X/Y and zoom in is the cheapest way to deliver "you can aim the circle at your face".
+
+**Tradeoff:** Three optional config fields = three more knobs in the UI. Optional means existing callers (CLI, tests) keep working unchanged. Validation is bounded (clamps to safe ranges).
+
+**Alternatives considered:** A single `circleCrop: { scale, x, y }` object (rejected — verbose to extend; more nesting in form payloads); compute aiming via auto-detection of faces (rejected — out of scope, requires a model).
+
+**Action:** Already implemented in `src/types/index.ts` (BatchConfig + RenderConfig) and `src/pipeline/filter-graph.ts` (`circleCropFilter()`). Test in `src/pipeline/__tests__/filter-graph.test.ts`.
+
+---
+
+## D-018 — Hard cap `MAX_BATCH_LEADS = 3` for the demo product (2026-04-28)
+
+**Decision:** Reduce the per-batch lead cap from 100 (PLAN.md target) to 3. Exported as `MAX_BATCH_LEADS` from `src/lib/csv.ts`; both `parseLeadsCsv` and the API/CLI clamp the caller's `maxLeads` to this value.
+
+**Why:** Each lead is a real Playwright capture + ffmpeg encode (≈30 s each on a dev machine, longer for slow sites). Running 100 leads in a demo would tie up the dev box for ~10 minutes with no recovery if the user wants to abort. 3 leads keeps demo feedback under ~2 minutes.
+
+**Tradeoff:** Doesn't match PLAN.md's "~100 videos/batch" v1 target. Production raise: bump `MAX_BATCH_LEADS` to 100 once we're comfortable with the runtime/cost. Single-source so it's a one-line change.
+
+**Alternatives considered:** Keep the 100 cap (rejected — too long-running for the current demo cadence); make it env-configurable (rejected — small constant, easier to read in code than thread through env).
+
+**Action:** `src/lib/csv.ts` exports `MAX_BATCH_LEADS`. `src/cli/run.ts` and `src/app/api/batches/route.ts` use it. Workbench duplicates the constant locally to avoid pulling node-only modules into the client bundle (small duplication, acceptable).

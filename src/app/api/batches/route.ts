@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { NextResponse } from 'next/server';
+import {
+  IMAGE_CIRCLE_EXTENSIONS,
+  VIDEO_CIRCLE_EXTENSIONS,
+} from '@/lib/circle-source';
 import { MAX_BATCH_LEADS, parseLeadsCsv } from '@/lib/csv';
 import { runBatch } from '@/lib/engine';
 import { registerRunningBatch } from '@/lib/batch-registry';
@@ -15,14 +19,11 @@ import type {
 
 export const runtime = 'nodejs';
 
-const IMAGE_OR_VIDEO_EXTENSIONS = new Set([
-  '.png',
-  '.jpg',
-  '.jpeg',
-  '.mp4',
-  '.mov',
-  '.webm',
-  '.mkv',
+// Allowed circle upload extensions = canonical image ∪ video sets. Single
+// source of truth lives in src/lib/circle-source.ts.
+const IMAGE_OR_VIDEO_EXTENSIONS: ReadonlySet<string> = new Set([
+  ...IMAGE_CIRCLE_EXTENSIONS,
+  ...VIDEO_CIRCLE_EXTENSIONS,
 ]);
 
 export async function POST(request: Request) {
@@ -156,7 +157,7 @@ function enumField<T extends string>(
   return allowed.includes(value as T) ? (value as T) : fallback;
 }
 
-function extensionFor(name: string, allowed: Set<string>, fallback: string): string {
+function extensionFor(name: string, allowed: ReadonlySet<string>, fallback: string): string {
   const ext = path.extname(name).toLowerCase();
   return allowed.has(ext) ? ext : fallback;
 }

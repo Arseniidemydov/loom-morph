@@ -11,6 +11,7 @@ import type {
   LeadInput,
   RenderFn,
 } from '@/types';
+import { inferCircleHasAudio } from './circle-source';
 import { createPaths, ensureBatchDirs, type PathHelpers } from './storage';
 
 // High-level "run a batch end-to-end" facade. Designed for two consumers:
@@ -64,8 +65,6 @@ export interface BatchSummary {
   reportPath: string;
 }
 
-const VIDEO_CIRCLE_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.mkv']);
-
 let sharedDb: DbClient | null = null;
 let sharedDbPath: string | null = null;
 
@@ -79,7 +78,7 @@ export async function runBatch(opts: RunBatchOptions): Promise<RunningBatch> {
   const captureFn = opts.capture ?? (await defaultCaptureFn());
   const renderFn = opts.render ?? (await defaultRenderFn());
 
-  const circleHasAudio = opts.assets.circleHasAudio ?? hasAudioByExtension(opts.assets.circleSourcePath);
+  const circleHasAudio = opts.assets.circleHasAudio ?? inferCircleHasAudio(opts.assets.circleSourcePath);
 
   const orchestratorPaths: OrchestratorPaths = {
     screenshotFor: (b, leadId) => paths.tmp(b, leadId),
@@ -174,11 +173,6 @@ function csvEscape(value: string): string {
   if (value === '') return '';
   if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
   return value;
-}
-
-function hasAudioByExtension(p: string): boolean {
-  const ext = p.slice(p.lastIndexOf('.')).toLowerCase();
-  return VIDEO_CIRCLE_EXTENSIONS.has(ext);
 }
 
 interface Deferred<T> {
