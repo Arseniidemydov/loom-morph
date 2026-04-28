@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import Papa from 'papaparse';
 import type {
   BatchEvent,
+  CaptureMode,
   CirclePosition,
   CircleSize,
   LeadStatus,
@@ -134,8 +135,12 @@ export function BatchWorkbench() {
   const [companyColumn, setCompanyColumn] = useState('');
   const [leads, setLeads] = useState<LeadPreview[]>(SAMPLE_LEADS);
   const [parseMessage, setParseMessage] = useState('Sample batch loaded');
+  const [prospectLimit, setProspectLimit] = useState(MAX_BATCH_LEADS);
   const [durationSec, setDurationSec] = useState(30);
   const [resolution, setResolution] = useState<Resolution>('720p');
+  // 'screenshot' (fast, parallelizable) vs 'recording' (real motion;
+  // needed for sites with hero videos / parallax). See D-019.
+  const [captureMode, setCaptureMode] = useState<CaptureMode>('screenshot');
   const [circleSize, setCircleSize] = useState<CircleSize>('M');
   const [circlePosition, setCirclePosition] =
     useState<CirclePosition>('bottom-right');
@@ -163,7 +168,7 @@ export function BatchWorkbench() {
             leads.reduce((sum, lead) => sum + lead.progress, 0) / leads.length,
           );
 
-    return { done, failed, active, totalProgress };
+    return { done, failed, active, processed: done + failed, totalProgress };
   }, [leads]);
 
   const websiteColumnStats = useMemo(() => {
@@ -182,11 +187,17 @@ export function BatchWorkbench() {
     }
 
     return {
-      queued: Math.min(usable, MAX_BATCH_LEADS),
+      queued: Math.min(usable, prospectLimit, MAX_BATCH_LEADS),
       usable,
       rejected,
     };
-  }, [csvDataset, websiteColumn]);
+  }, [csvDataset, prospectLimit, websiteColumn]);
+
+  const availableProspectCount = websiteColumnStats?.usable ?? leads.length;
+  const maxProspectLimit = Math.max(
+    1,
+    Math.min(availableProspectCount || MAX_BATCH_LEADS, MAX_BATCH_LEADS),
+  );
 
   const normalizedPreviewWebsite = useMemo(
     () => normalizeWebsite(previewWebsite) ?? '',
@@ -279,6 +290,7 @@ export function BatchWorkbench() {
       csvDataset.rows,
       websiteColumn,
       companyColumn,
+      prospectLimit,
     );
 
     setLeads(parsedLeads);
@@ -291,7 +303,11 @@ export function BatchWorkbench() {
         websiteColumn,
       }),
     );
-  }, [companyColumn, csvDataset, websiteColumn]);
+  }, [companyColumn, csvDataset, prospectLimit, websiteColumn]);
+
+  useEffect(() => {
+    if (prospectLimit > maxProspectLimit) setProspectLimit(maxProspectLimit);
+  }, [maxProspectLimit, prospectLimit]);
 
   useEffect(() => {
     if (previewWebsiteTouchedRef.current) return;
@@ -452,8 +468,9 @@ export function BatchWorkbench() {
     form.set('circleCropScale', String(circleCropScale));
     form.set('circleCropX', String(circleCropX));
     form.set('circleCropY', String(circleCropY));
+    form.set('captureMode', captureMode);
     form.set('filenameTemplate', filenameTemplate);
-    form.set('maxLeads', String(MAX_BATCH_LEADS));
+    form.set('maxLeads', String(prospectLimit));
 
     try {
       const response = await fetch('/api/batches', {
@@ -657,7 +674,7 @@ export function BatchWorkbench() {
                     <div className="mapper-note">
                       <strong>
                         {websiteColumnStats.queued > 0
-                          ? `${websiteColumnStats.queued} queued`
+                          ? `${websiteColumnStats.queued} selected`
                           : 'No usable websites'}
                       </strong>
                       <span>
@@ -694,6 +711,22 @@ export function BatchWorkbench() {
             <div className="panel-body stack">
               <div className="field-row">
                 <div className="field">
+                  <label htmlFor="prospect-limit">Prospects to process</label>
+                  <input
+                    className="text-input"
+                    id="prospect-limit"
+                    min={1}
+                    max={maxProspectLimit}
+                    type="number"
+                    value={prospectLimit}
+                    onChange={(event) =>
+                      setProspectLimit(
+                        clampNumber(Number(event.target.value) || 1, 1, maxProspectLimit),
+                      )
+                    }
+                  />
+                </div>
+                <div className="field">
                   <label htmlFor="duration">Duration</label>
                   <input
                     className="text-input"
@@ -707,14 +740,36 @@ export function BatchWorkbench() {
                     }
                   />
                 </div>
-                <div className="field">
-                  <label htmlFor="filename-template">Filename</label>
-                  <input
-                    className="text-input"
-                    id="filename-template"
-                    value={filenameTemplate}
-                    onChange={(event) => setFilenameTemplate(event.target.value)}
-                  />
+              </div>
+
+              <div className="field">
+                <label htmlFor="filename-template">Filename</label>
+                <input
+                  className="text-input"
+                  id="filename-template"
+                  value={filenameTemplate}
+                  onChange={(event) => setFilenameTemplate(event.target.value)}
+                />
+              </div>
+
+              <div className="field">
+                <div className="field-label">Capture Mode</div>
+                <div className="segmented" role="group" aria-label="Capture mode">
+                  {(['screenshot', 'recording'] as CaptureMode[]).map((item) => (
+                    <button
+                      className={`segment ${captureMode === item ? 'active' : ''}`}
+                      key={item}
+                      type="button"
+                      onClick={() => setCaptureMode(item)}
+                      title={
+                        item === 'screenshot'
+                          ? 'Pans a static screenshot — fast, parallel-friendly. Hero videos and animations are frozen at their loaded frame.'
+                          : 'Records the live page — captures hero videos, parallax, autoplay backgrounds. Slower (real-time-bound).'
+                      }
+                    >
+                      {item === 'screenshot' ? 'Static' : 'Live'}
+                    </button>
+                  ))}
                 </div>
               </div>
 
@@ -912,7 +967,8 @@ export function BatchWorkbench() {
 
         <section className="run-column" aria-label="Batch run">
           <div className="summary-strip">
-            <Metric label="Leads" value={String(leads.length)} />
+            <Metric label="Selected" value={String(leads.length)} />
+            <Metric label="Processed" value={`${summary.processed}/${leads.length}`} />
             <Metric label="Active" value={String(summary.active)} />
             <Metric label="Done" value={String(summary.done)} />
             <Metric label="Failed" value={String(summary.failed)} />
@@ -1081,6 +1137,7 @@ function buildLeadPreview(
   rows: CsvRow[],
   selectedWebsiteColumn: string,
   selectedCompanyColumn: string,
+  limit: number = MAX_BATCH_LEADS,
 ): LeadPreview[] {
   if (!selectedWebsiteColumn) return [];
 
@@ -1102,7 +1159,7 @@ function buildLeadPreview(
       };
     })
     .filter((lead): lead is LeadPreview => lead !== null)
-    .slice(0, MAX_BATCH_LEADS);
+    .slice(0, Math.min(limit, MAX_BATCH_LEADS));
 }
 
 function isWebsiteHeader(header: string): boolean {
@@ -1141,6 +1198,10 @@ function isCompanyHeader(header: string): boolean {
 
 function normalizePreviewWebsite(value: string): string {
   return normalizeWebsite(value) ?? '';
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function csvParseMessage({

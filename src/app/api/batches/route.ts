@@ -12,6 +12,7 @@ import { registerRunningBatch } from '@/lib/batch-registry';
 import { createPaths, ensureBatchDirs } from '@/lib/storage';
 import type {
   BatchConfig,
+  CaptureMode,
   CirclePosition,
   CircleSize,
   Resolution,
@@ -77,6 +78,7 @@ export async function POST(request: Request) {
       circleCropScale: clampNumber(numberField(form, 'circleCropScale', 1), 1, 2.5),
       circleCropX: clampNumber(numberField(form, 'circleCropX', 0), -100, 100),
       circleCropY: clampNumber(numberField(form, 'circleCropY', 0), -100, 100),
+      captureMode: enumField<CaptureMode>(form, 'captureMode', ['screenshot', 'recording'], 'screenshot'),
       filenameTemplate: stringField(form, 'filenameTemplate') || '{company}.mp4',
     };
 

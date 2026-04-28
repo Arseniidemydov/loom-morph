@@ -1,23 +1,23 @@
 :root {
   color-scheme: light;
-  --bg: #f6f7f8;
+  --bg: #f4f6f8;
   --surface: #ffffff;
-  --surface-muted: #f0f3f5;
-  --line: #d9dee4;
-  --line-strong: #b7c0ca;
-  --text: #17202a;
-  --muted: #687384;
-  --quiet: #8993a3;
-  --accent: #0f766e;
-  --accent-strong: #115e59;
-  --accent-soft: #d9f1ee;
+  --surface-muted: #eef2f6;
+  --line: #e1e6ec;
+  --line-strong: #c4ccd7;
+  --text: #151b23;
+  --muted: #5f6b7a;
+  --quiet: #8a94a3;
+  --accent: #14756f;
+  --accent-strong: #0f5f5a;
+  --accent-soft: #e3f4f1;
   --warn: #b45309;
   --warn-soft: #fff1d6;
   --danger: #b42318;
   --danger-soft: #ffe4df;
   --ok: #18794e;
   --ok-soft: #dff6e9;
-  --shadow: 0 8px 24px rgb(23 32 42 / 0.08);
+  --shadow: 0 1px 2px rgb(21 27 35 / 0.06), 0 10px 24px rgb(21 27 35 / 0.04);
 }
 
 * {
@@ -60,7 +60,7 @@ button:disabled {
 .workbench {
   width: min(1440px, 100%);
   margin: 0 auto;
-  padding: 20px;
+  padding: 24px;
 }
 
 .topbar {
@@ -69,6 +69,7 @@ button:disabled {
   justify-content: space-between;
   gap: 20px;
   min-height: 56px;
+  padding-bottom: 18px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -82,13 +83,14 @@ button:disabled {
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border: 1px solid var(--line-strong);
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   color: var(--accent-strong);
   font-weight: 800;
+  box-shadow: 0 1px 2px rgb(21 27 35 / 0.06);
 }
 
 .brand-copy {
@@ -116,8 +118,8 @@ button:disabled {
 .layout-grid {
   display: grid;
   grid-template-columns: minmax(360px, 430px) minmax(0, 1fr);
-  gap: 16px;
-  padding-top: 18px;
+  gap: 18px;
+  padding-top: 20px;
 }
 
 .setup-column,
@@ -140,7 +142,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 16px;
+  padding: 15px 16px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -189,7 +191,7 @@ button:disabled {
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fbfcfd;
+  background: #fafbfc;
 }
 
 .mapper-note {
@@ -225,11 +227,12 @@ button:disabled {
 .select-input,
 .file-input {
   width: 100%;
-  min-height: 38px;
-  border: 1px solid var(--line-strong);
+  min-height: 40px;
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: #fff;
   color: var(--text);
+  box-shadow: inset 0 1px 0 rgb(21 27 35 / 0.02);
 }
 
 .text-input,
@@ -240,6 +243,13 @@ button:disabled {
 .file-input {
   padding: 7px;
   color: var(--muted);
+}
+
+.text-input:focus,
+.select-input:focus,
+.file-input:focus {
+  border-color: var(--accent);
+  outline: 3px solid rgb(20 117 111 / 0.14);
 }
 
 .range-input {
@@ -278,17 +288,19 @@ button:disabled {
   gap: 7px;
   min-height: 36px;
   padding: 0 12px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: #fff;
   color: var(--text);
   font-weight: 700;
   font-size: 13px;
   text-decoration: none;
+  box-shadow: 0 1px 2px rgb(21 27 35 / 0.04);
 }
 
 .button:hover:not(:disabled) {
   border-color: var(--accent);
+  background: #fafdfc;
 }
 
 .button.primary {
@@ -326,7 +338,7 @@ button:disabled {
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--surface-muted);
+  background: #f3f6f8;
 }
 
 .segmented.three {
@@ -373,7 +385,7 @@ button:disabled {
 
 .summary-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -383,6 +395,7 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
+  box-shadow: 0 1px 2px rgb(21 27 35 / 0.04);
 }
 
 .metric span {
@@ -420,7 +433,7 @@ button:disabled {
 
 .data-table th {
   color: var(--muted);
-  background: #fbfcfd;
+  background: #fafbfc;
   font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
@@ -539,7 +552,7 @@ button:disabled {
   height: 34px;
   padding: 0 12px;
   border-bottom: 1px solid var(--line);
-  background: #fff;
+  background: #fbfcfd;
 }
 
 .browser-address {
@@ -663,7 +676,7 @@ button:disabled {
   padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #fff;
+  background: #fafbfc;
   color: var(--muted);
   font-size: 12px;
 }

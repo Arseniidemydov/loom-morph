@@ -33,6 +33,8 @@ export const CIRCLE_PIXELS: Record<CircleSize, number> = {
   L: 360,
 };
 
+export type CaptureMode = 'screenshot' | 'recording'; // D-019
+
 export interface BatchConfig {
   durationSec: number; // default 30
   resolution: Resolution; // default '1080p'
@@ -42,6 +44,10 @@ export interface BatchConfig {
   circleCropScale?: number; // 1-2.5, zooms the source inside the circle mask
   circleCropX?: number; // -100..100, shifts the crop horizontally
   circleCropY?: number; // -100..100, shifts the crop vertically
+  // D-019 — 'screenshot' (default; pans a static PNG, parallel-friendly) or
+  // 'recording' (records the live page; preserves hero videos / parallax /
+  // animations at the cost of real-time-bound capture).
+  captureMode?: CaptureMode;
   filenameTemplate: string; // e.g. "{company}.mp4", fallback "lead-{i}.mp4"
 }
 

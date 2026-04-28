@@ -75,8 +75,20 @@ export async function runBatch(opts: RunBatchOptions): Promise<RunningBatch> {
 
   const db = getSharedDb(paths.db());
 
-  const captureFn = opts.capture ?? (await defaultCaptureFn());
-  const renderFn = opts.render ?? (await defaultRenderFn());
+  const captureMode = opts.config.captureMode ?? 'screenshot';
+  const baseCapture = opts.capture ?? (await defaultCaptureFn());
+  const baseRender = opts.render ?? (await defaultRenderFn());
+
+  // For 'recording' mode the capture function records a WebM and the render
+  // function tags every job with backgroundKind='video'. The orchestrator
+  // doesn't need to know about modes at all — the engine handles routing
+  // at the boundary.
+  const captureFn =
+    captureMode === 'recording'
+      ? createRecordingCapture(opts.config.durationSec, baseCapture)
+      : baseCapture;
+  const renderFn =
+    captureMode === 'recording' ? wrapRenderWithVideoBackground(baseRender) : baseRender;
 
   const circleHasAudio = opts.assets.circleHasAudio ?? inferCircleHasAudio(opts.assets.circleSourcePath);
 
@@ -200,7 +212,41 @@ export async function shutdownEngine(): Promise<void> {
     sharedDbPath = null;
   }
   const { shutdownCapturePool } = await import('@/pipeline/capture');
+  const { shutdownRecordPool } = await import('@/pipeline/record');
   await shutdownCapturePool();
+  await shutdownRecordPool();
+}
+
+// ────────────────────── recording-mode adapters ──────────────────────
+
+// Wraps recordWebsite in the CaptureFn shape so the orchestrator doesn't
+// need to know the difference. The output path arrives as ".png" (the
+// orchestrator's screenshotFor convention) but we rewrite to .webm — the
+// downstream render step reads it as a video input.
+function createRecordingCapture(durationSec: number, fallbackCapture: CaptureFn): CaptureFn {
+  return async (input) => {
+    if (input.url === '') return fallbackCapture(input);
+    const { recordWebsite } = await import('@/pipeline/record');
+    const webmPath = input.outputPath.replace(/\.png$/i, '.webm');
+    const result = await recordWebsite({
+      url: input.url,
+      outputPath: webmPath,
+      durationSec,
+    });
+    return {
+      pngPath: result.videoPath, // CaptureResult.pngPath is reused as a generic background-source path here
+      width: result.width,
+      height: result.height,
+      capturedAtMs: result.capturedAtMs,
+      durationMs: result.durationMs,
+    };
+  };
+}
+
+// Wraps a RenderFn so every job is tagged backgroundKind='video'. The job's
+// own value (if any) takes precedence so a per-lead override still wins.
+function wrapRenderWithVideoBackground(base: RenderFn): RenderFn {
+  return (job) => base({ ...job, backgroundKind: job.backgroundKind ?? 'video' });
 }
 
 function getSharedDb(filename: string): DbClient {
