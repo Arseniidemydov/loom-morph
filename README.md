@@ -1,10 +1,6 @@
 # Loom Morph
 
-Turn a CSV of leads into a batch of personalized "Loom-style" outreach videos.
-For each row: capture the lead's website, animate a smooth scroll, overlay a
-circular face bubble (image or video) in the corner, optionally mix in a shared
-MP3 narration, and produce a downloadable MP4. Up to ~100 videos per batch on
-a single machine.
+🥷🥷 Personalised outreach at scale
 
 ## Documentation
 
