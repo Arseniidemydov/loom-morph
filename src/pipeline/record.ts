@@ -329,33 +329,58 @@ async function ensureBrowser(): Promise<Browser> {
       chromium.use(StealthPlugin());
       stealthApplied = true;
     }
-    const browser = (await playwrightExtra.chromium.launch({
-      headless: true,
-      args: [
-        // Pin the device pixel ratio to 1 so a page never renders at the
-        // host monitor's DPR (intermittent on macOS where Chromium will
-        // pick up the laptop's 2× by default and the recording comes out
-        // looking "zoomed in").
-        '--force-device-scale-factor=1',
-        // Hero videos should play immediately — most pages mark them
-        // `<video autoplay muted>` but Chromium's autoplay heuristics
-        // sometimes still block until a user gesture. Allow autoplay
-        // everywhere; we're not browsing real user content.
-        '--autoplay-policy=no-user-gesture-required',
-        // Headless tabs are treated as "backgrounded" by default and
-        // Chromium throttles timers + rAF. Disabling stops the page
-        // animations from running at single-digit fps during the
-        // recording.
-        '--disable-background-timer-throttling',
-        '--disable-renderer-backgrounding',
-        '--disable-backgrounding-occluded-windows',
-        // Some pages intersection-observer their hero video and only
-        // hydrate it when scrolled into view. Disabling lazy loading
-        // makes the above-the-fold video start playing during the
-        // settle window instead of mid-recording.
-        '--disable-features=LazyImageLoading,LazyFrameLoading',
-      ],
-    })) as Browser;
+    const launchArgs = [
+      // Pin the device pixel ratio to 1 so a page never renders at the
+      // host monitor's DPR (intermittent on macOS where Chromium will
+      // pick up the laptop's 2× by default and the recording comes out
+      // looking "zoomed in").
+      '--force-device-scale-factor=1',
+      // Hero videos should play immediately — most pages mark them
+      // `<video autoplay muted>` but Chromium's autoplay heuristics
+      // sometimes still block until a user gesture. Allow autoplay
+      // everywhere; we're not browsing real user content.
+      '--autoplay-policy=no-user-gesture-required',
+      // Headless tabs are treated as "backgrounded" by default and
+      // Chromium throttles timers + rAF. Disabling stops the page
+      // animations from running at single-digit fps during the
+      // recording.
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding',
+      '--disable-backgrounding-occluded-windows',
+      // Some pages intersection-observer their hero video and only
+      // hydrate it when scrolled into view. Disabling lazy loading
+      // makes the above-the-fold video start playing during the
+      // settle window instead of mid-recording.
+      '--disable-features=LazyImageLoading,LazyFrameLoading',
+    ];
+    // Prefer system Chrome over Playwright's bundled Chromium for one
+    // critical reason: Chromium ships without the proprietary codec set
+    // (H.264 / HEVC / AAC) that real Chrome includes. The vast majority
+    // of landing-page hero videos are H.264 MP4, so the bundled binary
+    // decodes them to a black frame and the recording sits on a poster.
+    // Falls back to bundled Chromium if Chrome isn't installed (CI,
+    // production containers without Google Chrome) — we log once so the
+    // operator knows quality may degrade.
+    let browser: Browser;
+    try {
+      browser = (await playwrightExtra.chromium.launch({
+        headless: true,
+        channel: 'chrome',
+        args: launchArgs,
+      })) as Browser;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[record] system Chrome not available, falling back to bundled Chromium. ' +
+          'Hero videos using H.264/HEVC codecs will appear frozen. ' +
+          'Install Chrome (or run `npx playwright install chrome`) to fix.',
+        err instanceof Error ? err.message : err,
+      );
+      browser = (await playwrightExtra.chromium.launch({
+        headless: true,
+        args: launchArgs,
+      })) as Browser;
+    }
     activeBrowser = browser;
     return browser;
   })();
