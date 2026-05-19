@@ -39,3 +39,8 @@ order. The current branch state and what's next live in `progress.md`.
 
 - `ffmpeg` on `PATH` — `brew install ffmpeg` on macOS, package manager on Linux.
 - Chromium for Playwright — installed via `npx playwright install chromium`.
+
+## Contributors
+
+- Arseniidemydov — project owner
+- Codex — AI coding assistant
