@@ -1,15 +1,17 @@
 # Loom Morph
 
-<div style="text-align: center;">
+<p align="center">
   <img 
     width="324" 
     height="324" 
     alt="loommorph_logo" 
     src="https://github.com/user-attachments/assets/ba48d640-3ea7-4d13-91ee-fb73090bfc6d" 
   />
-</div>
+</p>
 
-🥷🥷 Personalised outreach at scale
+<p align="center">
+  🥷🥷 Personalised outreach at scale
+</p>
 
 ## Documentation
 
