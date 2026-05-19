@@ -1,5 +1,7 @@
 # Loom Morph
 
+<img width="1024" height="1024" alt="loommorph_logo" src="https://github.com/user-attachments/assets/ba48d640-3ea7-4d13-91ee-fb73090bfc6d" />
+
 🥷🥷 Personalised outreach at scale
 
 ## Documentation
