@@ -7,8 +7,11 @@ CREATE TABLE IF NOT EXISTS batches (
   config_json TEXT NOT NULL,                -- BatchConfig serialized
   total       INTEGER NOT NULL,
   created_at  INTEGER NOT NULL,
-  finished_at INTEGER
+  finished_at INTEGER,
+  name        TEXT                          -- user-facing label; nullable for legacy rows, defaults filled in by the API on insert
 );
+
+CREATE INDEX IF NOT EXISTS idx_batches_created ON batches(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS leads (
   id            TEXT PRIMARY KEY,

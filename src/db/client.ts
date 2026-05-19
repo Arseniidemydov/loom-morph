@@ -25,6 +25,11 @@ export interface DbClient {
   finishBatch(batchId: string, status: 'done' | 'failed'): void;
   getBatch(batchId: string): BatchRecord | null;
   getLeads(batchId: string): LeadRecord[];
+  /** Newest first. */
+  listBatches(): BatchRecord[];
+  setBatchName(batchId: string, name: string): boolean;
+  clearLeadOutput(batchId: string, leadId: string, error?: string): LeadRecord | null;
+  deleteBatch(batchId: string): boolean;
   close(): void;
 }
 
@@ -35,6 +40,7 @@ interface BatchRow {
   total: number;
   created_at: number;
   finished_at: number | null;
+  name: string | null;
 }
 
 interface LeadRow {
@@ -65,8 +71,8 @@ export function createDbClient(opts: CreateDbClientOptions): DbClient {
 
   const stmts = {
     insertBatch: db.prepare(
-      `INSERT INTO batches (id, status, config_json, total, created_at, finished_at)
-       VALUES (@id, @status, @config_json, @total, @created_at, NULL)`,
+      `INSERT INTO batches (id, status, config_json, total, created_at, finished_at, name)
+       VALUES (@id, @status, @config_json, @total, @created_at, NULL, @name)`,
     ),
     insertLead: db.prepare(
       `INSERT INTO leads (id, batch_id, row_index, website, csv_data_json, status,
@@ -87,13 +93,31 @@ export function createDbClient(opts: CreateDbClientOptions): DbClient {
       `UPDATE batches SET status = @status, finished_at = @finished_at WHERE id = @id`,
     ),
     selectBatch: db.prepare(`SELECT * FROM batches WHERE id = ?`),
+    selectAllBatches: db.prepare(
+      `SELECT * FROM batches ORDER BY created_at DESC`,
+    ),
+    setBatchName: db.prepare(`UPDATE batches SET name = @name WHERE id = @id`),
     selectLeads: db.prepare(
       `SELECT * FROM leads WHERE batch_id = ? ORDER BY row_index ASC`,
     ),
+    selectLead: db.prepare(
+      `SELECT * FROM leads WHERE batch_id = ? AND id = ?`,
+    ),
+    clearLeadOutput: db.prepare(
+      `UPDATE leads
+       SET status = 'failed', error = @error, output_path = NULL
+       WHERE batch_id = @batch_id AND id = @id`,
+    ),
+    deleteLeadsForBatch: db.prepare(`DELETE FROM leads WHERE batch_id = ?`),
+    deleteBatch: db.prepare(`DELETE FROM batches WHERE id = ?`),
   };
 
   const insertLeadsTx = db.transaction((leads: LeadRecord[]) => {
     for (const lead of leads) stmts.insertLead.run(toLeadRow(lead));
+  });
+  const deleteBatchTx = db.transaction((batchId: string) => {
+    stmts.deleteLeadsForBatch.run(batchId);
+    return stmts.deleteBatch.run(batchId).changes > 0;
   });
 
   return {
@@ -104,6 +128,7 @@ export function createDbClient(opts: CreateDbClientOptions): DbClient {
         config_json: JSON.stringify(batch.config),
         total: batch.leads.length,
         created_at: clock(),
+        name: batch.name ?? null,
       });
     },
     insertLeads(leads) {
@@ -127,23 +152,50 @@ export function createDbClient(opts: CreateDbClientOptions): DbClient {
     getBatch(batchId) {
       const row = stmts.selectBatch.get(batchId) as BatchRow | undefined;
       if (!row) return null;
-      const config = JSON.parse(row.config_json) as BatchConfig;
-      return {
-        id: row.id,
-        status: row.status,
-        config,
-        total: row.total,
-        createdAt: row.created_at,
-        finishedAt: row.finished_at ?? undefined,
-      };
+      return fromBatchRow(row);
     },
     getLeads(batchId) {
       const rows = stmts.selectLeads.all(batchId) as LeadRow[];
       return rows.map(fromLeadRow);
     },
+    listBatches() {
+      const rows = stmts.selectAllBatches.all() as BatchRow[];
+      return rows.map(fromBatchRow);
+    },
+    setBatchName(batchId, name) {
+      const trimmed = name.trim();
+      if (trimmed.length === 0) return false;
+      const result = stmts.setBatchName.run({ id: batchId, name: trimmed });
+      return result.changes > 0;
+    },
+    clearLeadOutput(batchId, leadId, error) {
+      stmts.clearLeadOutput.run({
+        batch_id: batchId,
+        id: leadId,
+        error: error ?? 'Video deleted',
+      });
+      const row = stmts.selectLead.get(batchId, leadId) as LeadRow | undefined;
+      return row ? fromLeadRow(row) : null;
+    },
+    deleteBatch(batchId) {
+      return deleteBatchTx(batchId);
+    },
     close() {
       db.close();
     },
+  };
+}
+
+function fromBatchRow(row: BatchRow): BatchRecord {
+  const config = JSON.parse(row.config_json) as BatchConfig;
+  return {
+    id: row.id,
+    name: row.name ?? undefined,
+    status: row.status,
+    config,
+    total: row.total,
+    createdAt: row.created_at,
+    finishedAt: row.finished_at ?? undefined,
   };
 }
 

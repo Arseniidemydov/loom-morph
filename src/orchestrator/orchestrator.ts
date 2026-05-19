@@ -2,6 +2,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import {
   CaptureError,
+  RenderError,
   type BatchEvent,
   type BatchInput,
   type CaptureFn,
@@ -12,6 +13,7 @@ import {
   type RenderJob,
 } from '@/types';
 import type { DbClient } from '@/db/client';
+import { resolveCompanyName, resolveFirstName } from '@/lib/lead-fields';
 import { createEventChannel } from './events';
 import { createPool, type Pool } from './pool';
 
@@ -29,8 +31,8 @@ export interface OrchestratorDeps {
   db: DbClient;
   paths: OrchestratorPaths;
   clock?: () => number;
-  capturePoolSize?: number;       // default 6
-  renderPoolSize?: number;        // default min(cpus, 8)
+  capturePoolSize?: number;       // default 5 — keeps the local machine usable
+  renderPoolSize?: number;        // default min(cpus - 1, 5) — same constraint
   retries?: { capture: number };  // default { capture: 1 }
   uuid?: () => string;            // override for deterministic tests
 }
@@ -53,8 +55,10 @@ export class BatchOrchestrator {
     this.paths = deps.paths;
     this.clock = deps.clock ?? (() => Date.now());
     this.uuid = deps.uuid ?? (() => randomUUID());
-    this.capturePool = createPool(deps.capturePoolSize ?? 6);
-    this.renderPool = createPool(deps.renderPoolSize ?? Math.min(os.cpus().length, 8));
+    this.capturePool = createPool(deps.capturePoolSize ?? 5);
+    this.renderPool = createPool(
+      deps.renderPoolSize ?? Math.min(Math.max(1, os.cpus().length - 1), 5),
+    );
     this.captureRetries = deps.retries?.capture ?? 1;
   }
 
@@ -153,8 +157,19 @@ export class BatchOrchestrator {
         audioPath: batch.audioPath,
         outputPath,
         config: batch.config,
+        backgroundStartOffsetSec: captureResult.videoStartOffsetSec,
       };
-      await this.renderPool.run(() => this.render(renderJob));
+      // ffmpeg sometimes exits with EINVAL (visible as code 234) under
+      // peak concurrent load — fd exhaustion or transient libx264 buffer
+      // allocation failures that aren't deterministic from the input.
+      // One render retry catches these cleanly; persistent failures
+      // (bad input, missing codec) fail through on the second attempt.
+      try {
+        await this.renderPool.run(() => this.render(renderJob));
+      } catch (firstErr) {
+        if (!isLikelyTransientRenderError(firstErr)) throw firstErr;
+        await this.renderPool.run(() => this.render(renderJob));
+      }
     } catch (err) {
       const reason = formatErrorReason(err);
       this.fail(lead, reason, channel);
@@ -209,6 +224,12 @@ export class BatchOrchestrator {
 // Render filename from BatchConfig.filenameTemplate, falling back to lead-{i}.
 // Tokens are CSV column keys; if any required token is missing in csvData,
 // fall back rather than emit a literal "{key}" filename.
+//
+// The `{company}` token is special: it resolves through resolveCompanyName,
+// which is case-insensitive and matches common aliases (Company, Account,
+// Organization, "Company Name", …). Without that, `{company}.mp4` only
+// works on CSVs whose header is literally "company" — which almost no
+// real sales CSV uses — and every file silently becomes `lead-1.mp4`.
 function renderFilename(batch: BatchInput, lead: LeadRecord): string {
   const template = batch.config.filenameTemplate || '';
   const fallback = `lead-${lead.rowIndex + 1}.mp4`;
@@ -220,7 +241,24 @@ function renderFilename(batch: BatchInput, lead: LeadRecord): string {
   resolved = resolved.replace(/\{([^}]+)\}/g, (_match, raw: string) => {
     const key = raw.trim();
     if (key === 'i') return String(lead.rowIndex + 1);
-    const value = lead.csvData[key];
+    // Special tokens with smart resolution:
+    //   {company}   — company aliases first; falls back to first-name
+    //                 aliases. This is the most-used token and the
+    //                 fallback chain matches the user's default-template
+    //                 intent ("{company} and vibeflow.mp4" should still
+    //                 produce a usable name when there's no company).
+    //   {firstName} — strictly first-name aliases, no company fallback.
+    //                 Lets power users write a template that fails open
+    //                 when the CSV has no name columns.
+    const lower = key.toLowerCase();
+    let value: string | undefined;
+    if (lower === 'company') {
+      value = resolveCompanyName(lead.csvData) ?? resolveFirstName(lead.csvData);
+    } else if (lower === 'firstname' || lower === 'first') {
+      value = resolveFirstName(lead.csvData);
+    } else {
+      value = lead.csvData[key];
+    }
     if (value === undefined || value === '') {
       missing = true;
       return '';
@@ -236,6 +274,20 @@ function renderFilename(batch: BatchInput, lead: LeadRecord): string {
 function safeFilenameSegment(s: string): string {
   // Strip path separators and characters that misbehave on common filesystems.
   return s.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim() || 'unnamed';
+}
+
+function isLikelyTransientRenderError(err: unknown): boolean {
+  // The two failure modes we see at peak concurrency:
+  //   - ffmpeg exits with code 234 (= unsigned wrap of -22 / EINVAL),
+  //     usually fd exhaustion or libx264 buffer alloc.
+  //   - timeout (the orchestrator-side kill).
+  // Codec / missing-input style failures will repeat on retry; those
+  // we leave to surface as real errors.
+  if (err instanceof RenderError) {
+    if (err.reason === 'timeout') return true;
+    if (err.reason === 'ffmpeg-error' && /code\s+(234|1)\b/.test(err.message)) return true;
+  }
+  return false;
 }
 
 function formatErrorReason(err: unknown): string {

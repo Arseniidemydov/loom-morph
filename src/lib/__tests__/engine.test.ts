@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -185,6 +186,83 @@ describe('runBatch engine facade', () => {
     expect(report).toContain('https://bad.example/,failed,,,,"site unreachable, ""blocked"""');
   });
 
+  it('derives durationSec from a video circle with audio and discards any uploaded MP3', async () => {
+    if (!haveFfmpeg) return;
+    const root = await mkdtemp(path.join(tmpdir(), 'loom-engine-derive-'));
+    const circle = path.join(root, 'circle.mp4');
+    const mp3 = path.join(root, 'narration.mp3');
+    makeFixtureMedia(circle, 7, 'video-with-audio');
+    makeFixtureMedia(mp3, 19, 'audio'); // intentionally longer; should be ignored
+
+    const render = vi.fn(successRender());
+    const running = await runBatch({
+      batchId: 'derive-circle',
+      dataRoot: root,
+      config: { ...baseConfig, durationSec: 30 },
+      leads: [lead('https://x.example/', 'X')],
+      assets: { circleSourcePath: circle, audioPath: mp3 },
+      capture: successCapture(),
+      render,
+    });
+    await collect(running.events);
+    await running.completion;
+
+    expect(render).toHaveBeenCalledTimes(1);
+    const job = render.mock.calls[0]![0]!;
+    expect(job.config.durationSec).toBeGreaterThan(6.5);
+    expect(job.config.durationSec).toBeLessThan(7.5);
+    expect(job.audioPath).toBeUndefined(); // MP3 dropped because circle has audio
+    expect(job.circleHasAudio).toBe(true);
+  });
+
+  it('derives durationSec from the MP3 when the circle is silent', async () => {
+    if (!haveFfmpeg) return;
+    const root = await mkdtemp(path.join(tmpdir(), 'loom-engine-derive-mp3-'));
+    const circle = path.join(root, 'circle.png');
+    const mp3 = path.join(root, 'narration.mp3');
+    await writeFile(circle, 'png');
+    makeFixtureMedia(mp3, 12, 'audio');
+
+    const render = vi.fn(successRender());
+    const running = await runBatch({
+      batchId: 'derive-mp3',
+      dataRoot: root,
+      config: { ...baseConfig, durationSec: 30 },
+      leads: [lead('https://y.example/', 'Y')],
+      assets: { circleSourcePath: circle, audioPath: mp3 },
+      capture: successCapture(),
+      render,
+    });
+    await collect(running.events);
+    await running.completion;
+
+    expect(render).toHaveBeenCalledTimes(1);
+    const job = render.mock.calls[0]![0]!;
+    expect(job.config.durationSec).toBeGreaterThan(11.5);
+    expect(job.config.durationSec).toBeLessThan(12.5);
+    expect(job.audioPath).toBe(mp3);
+    expect(job.circleHasAudio).toBe(false);
+  });
+
+  it('falls back to the configured durationSec when there is no audio source', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'loom-engine-fallback-'));
+    const render = vi.fn(successRender());
+    const running = await runBatch({
+      batchId: 'derive-fallback',
+      dataRoot: root,
+      config: { ...baseConfig, durationSec: 25 },
+      leads: [lead('https://z.example/', 'Z')],
+      assets: { circleSourcePath: path.join(root, 'circle.png') },
+      capture: successCapture(),
+      render,
+    });
+    await collect(running.events);
+    await running.completion;
+
+    const job = render.mock.calls[0]![0]!;
+    expect(job.config.durationSec).toBe(25);
+  });
+
   it('switches the shared DB when dataRoot changes without shutdown', async () => {
     const rootA = await mkdtemp(path.join(tmpdir(), 'loom-engine-root-a-'));
     const rootB = await mkdtemp(path.join(tmpdir(), 'loom-engine-root-b-'));
@@ -256,4 +334,34 @@ function successRender(): RenderFn {
     await writeFile(outputPath, 'mp4');
     return { outputPath, durationMs: 1 };
   };
+}
+
+const haveFfmpeg = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0;
+
+function makeFixtureMedia(
+  out: string,
+  durationSec: number,
+  kind: 'audio' | 'video-with-audio',
+): void {
+  const args =
+    kind === 'video-with-audio'
+      ? [
+          '-y',
+          '-f', 'lavfi', '-i', `testsrc=size=160x120:rate=30:duration=${durationSec}`,
+          '-f', 'lavfi', '-i', `sine=frequency=440:duration=${durationSec}`,
+          '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+          '-c:a', 'aac',
+          '-shortest',
+          '-t', String(durationSec),
+          out,
+        ]
+      : [
+          '-y',
+          '-f', 'lavfi', '-i', `sine=frequency=440:duration=${durationSec}`,
+          '-c:a', 'libmp3lame',
+          '-t', String(durationSec),
+          out,
+        ];
+  const r = spawnSync('ffmpeg', args, { stdio: 'pipe', encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`fixture gen failed: ${r.stderr}`);
 }

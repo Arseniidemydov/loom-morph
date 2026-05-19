@@ -103,8 +103,8 @@ maybe('recordWebsite — integration (real Chromium)', () => {
     });
 
     expect(result.videoPath).toBe(out);
-    expect(result.width).toBe(1280);
-    expect(result.height).toBe(800);
+    expect(result.width).toBe(1920);
+    expect(result.height).toBe(1080);
     expect(existsSync(out)).toBe(true);
 
     // ffprobe the recording. Playwright's WebM encodes duration in the

@@ -49,6 +49,10 @@ export function getRegisteredBatch(batchId: string): RegisteredBatch | undefined
   return batches.get(batchId);
 }
 
+export function removeRegisteredBatch(batchId: string): boolean {
+  return batches.delete(batchId);
+}
+
 async function consumeBatch(
   running: RunningBatch,
   entry: RegisteredBatchInternal,

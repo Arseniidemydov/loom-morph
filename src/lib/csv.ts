@@ -11,7 +11,9 @@ import { normalizeWebsite } from './url';
 //     omitted, infer by exact match on common names.
 //   - Rows where the website cannot be normalized are dropped from the
 //     output AND reported in `skipped` so the caller can surface a count.
-//   - Hard cap at `maxLeads` (default 3 for the current demo/product cap).
+//   - Hard cap at `maxLeads` (default 1000 — the pre-prod batch ceiling).
+//     The render pool throttles concurrency, so 1000 leads queue up and run
+//     5 at a time without overloading the host.
 //   - All other CSV columns ride along on `csvData` for filename templating.
 
 export interface ParseLeadsOptions {
@@ -37,7 +39,7 @@ const WEBSITE_HEADER_CANDIDATES = [
   'company domain',
 ];
 
-export const MAX_BATCH_LEADS = 3;
+export const MAX_BATCH_LEADS = 1000;
 
 export async function parseLeadsCsvFile(
   filePath: string,

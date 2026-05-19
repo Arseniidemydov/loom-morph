@@ -6,7 +6,11 @@ import type { Browser, BrowserContext, Page } from 'playwright';
 import playwrightExtra from 'playwright-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { CaptureError } from '@/types';
-import { injectionCss } from './cookie-selectors';
+import {
+  COOKIE_ACCEPT_SELECTORS,
+  COOKIE_ACCEPT_TEXT_PATTERNS,
+  injectionCss,
+} from './cookie-selectors';
 import { generateScrollSegments, type ScrollSegment } from './scroll-segments';
 
 // Live-page recorder. The screenshot-pan worker (capture.ts) is the right
@@ -32,6 +36,10 @@ export interface RecordInput {
   durationSec: number;     // total recording length
   viewportWidth?: number;  // default 1280
   viewportHeight?: number; // default 800
+  // 'auto' (default) probes whether the page responds to programmatic
+  // scroll and falls back to 'static' if not. 'pan' always drives the
+  // human-ish scroll; 'static' always holds the page at scrollY=0.
+  scrollMode?: 'auto' | 'pan' | 'static';
 }
 
 export interface RecordResult {
@@ -41,11 +49,49 @@ export interface RecordResult {
   durationSec: number;
   capturedAtMs: number;
   durationMs: number;      // wall-clock time spent (≥ durationSec)
+  // Wall-clock seconds elapsed between the recording start (context open)
+  // and the moment driveScroll begins. The renderer skips this prefix via
+  // ffmpeg `-ss` so the output never shows a blank/loading page.
+  videoStartOffsetSec: number;
 }
 
-const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
-const GOTO_TIMEOUT_MS = 30_000;
-const SETTLE_MS = 500;
+const DEFAULT_VIEWPORT = { width: 1920, height: 1080 } as const;
+// Page renders 1:1 into the output viewport. We tried supersampling (1.25×)
+// for a "show more content" effect, but it slowed layout and tripped
+// conditional-render paths on some sites — net regression. If we revisit
+// it, gate behind a per-batch opt-in setting.
+const GOTO_TIMEOUT_MS = 45_000;
+// `load` may not fire on chatty pages within this budget; we fall through
+// to the bounded networkidle wait below so the capture proceeds anyway.
+const GOTO_LOAD_BUDGET_MS = 25_000;
+// Wait for the network to go idle after DCL — modern landing pages keep
+// firing fetches for analytics, fonts, and hero images well past parse.
+// This budget is bounded so chatty pages (long-poll sockets, marketing
+// pixels) can't pin us forever, but it's big enough that heavy
+// React/Next.js sites finish their hydration round.
+const NETWORK_IDLE_BUDGET_MS = 12_000;
+// Post-idle settle. Gives hydrated JS, lazy-loaded above-the-fold images,
+// late-arriving web fonts, and any animation-on-load (hero fades, etc.)
+// time to finish rendering before driveScroll starts capturing useful
+// frames. The output trim drops this prefix entirely so a long settle
+// only costs wall time, never seconds of output footage.
+const SETTLE_MS = 5_000;
+// Cap on `document.fonts.ready` so a site with a broken font CDN can't
+// stall the capture. Most pages resolve this in 100-500ms.
+const FONTS_READY_BUDGET_MS = 4_000;
+// "Wait until the page stops growing." Heavy sites keep injecting hero
+// images, embeds, lazy components for several seconds after networkidle
+// fires. We poll scrollHeight every 500ms and consider the layout stable
+// once it hasn't changed for STABILITY_REQUIRED_MS. Capped at
+// STABILITY_MAX_WAIT_MS so a site with infinite scroll / live-updating
+// content can't pin us forever.
+const STABILITY_MAX_WAIT_MS = 15_000;
+const STABILITY_REQUIRED_MS = 2_500;
+const STABILITY_POLL_MS = 500;
+// Bounded budget for the cookie-banner click sweep — bounded per selector,
+// not in total, so this is a rough upper bound for the worst case where
+// every selector misses.
+const COOKIE_CLICK_TIMEOUT_MS = 350;
 const FALLBACK_PAGE_HEIGHT_RATIO = 4; // when a page reports zero scroll height, pretend it's 4× viewport so the segment generator still produces motion.
 
 let stealthApplied = false;
@@ -77,30 +123,121 @@ export async function recordWebsite(input: RecordInput): Promise<RecordResult> {
       locale: 'en-US',
       recordVideo: { dir: tmpDir, size: viewport },
     });
+    // Inject the heartbeat element BEFORE navigation so the video encoder
+    // never sees a static page (see buildInitScript for why). Cookie banners
+    // are dismissed by clicking AFTER navigation — we used to CSS-hide them
+    // here too, but that hid the accept buttons via display:none inheritance
+    // and made the click pass impossible.
+    await context.addInitScript({ content: buildInitScript() });
     page = await context.newPage();
 
     try {
-      await page.goto(input.url, { waitUntil: 'networkidle', timeout: GOTO_TIMEOUT_MS });
+      // Prefer `load` so the page has had time to render its hero
+      // content and we're not capturing a blank parsed-HTML document.
+      // For pages where `load` never fires within the budget (chatty
+      // long-poll sockets, persistent analytics requests), we fall
+      // through to a hard navigation with no waitUntil and rely on the
+      // bounded networkidle + visualReadiness + layoutStable waits
+      // below to catch a usable state. Genuine network failures (DNS,
+      // TLS, refused) still throw and bubble up as captureErrors.
+      try {
+        await page.goto(input.url, { waitUntil: 'load', timeout: GOTO_LOAD_BUDGET_MS });
+      } catch (err) {
+        if (!isPlaywrightTimeout(err)) throw err;
+        // Already navigating to the URL — wait briefly for DCL so the
+        // page has SOMETHING in the DOM, then proceed.
+        await page
+          .waitForLoadState('domcontentloaded', { timeout: GOTO_TIMEOUT_MS - GOTO_LOAD_BUDGET_MS })
+          .catch(() => {});
+      }
+      await page
+        .waitForLoadState('networkidle', { timeout: NETWORK_IDLE_BUDGET_MS })
+        .catch(() => {
+          // Either timed out (chatty page) or a navigation interrupted the
+          // wait; either way we have a painted page and proceed.
+        });
     } catch (err) {
       throw classifyNavError(err);
     }
 
-    await page.addStyleTag({ content: injectionCss() });
+    // Two-pass cookie dismissal. Switching to `domcontentloaded` made our
+    // first attempt happen before some CMP libraries (Cookiebot, custom
+    // self-injected banners) have even mounted their DOM, so we'd return
+    // empty-handed and fall back to the CSS hide — which only works for
+    // banners whose wrapper selector we know.
+    //
+    //   - EARLY pass: catches fast-loading banners so any
+    //     consent-gated content (hero videos, embeds) can start loading
+    //     during the readiness/stability waits below.
+    //   - LATE pass: catches slow-injecting banners. By the time
+    //     waitForLayoutStable returns, the page has been done changing
+    //     for 2.5s, so any banner that's going to appear is in the DOM.
+    //
+    // Both calls are cheap on banner-free pages (~50ms each).
+    await dismissCookieBanner(page);
+
+    // Wait for visible content to actually be ready before recording. Web
+    // fonts and above-the-fold images are what the user sees mid-load
+    // ("FOUT" text restyling, hero images popping in after the fade);
+    // these waits target those signals directly rather than relying on
+    // generic settle time.
+    await waitForVisualReadiness(page);
+    // Heavy sites keep injecting content for several seconds after
+    // networkidle fires. This polls scrollHeight until it stops changing
+    // — a much stronger signal than any fixed sleep, because it exits
+    // fast on light sites and waits as long as needed on heavy ones.
+    await waitForLayoutStable(page);
+
+    // Late dismiss + CSS hide as the final safety net. Anything still on
+    // screen at this point either gets clicked away or hidden by the
+    // injectionCss tag below.
+    await dismissCookieBanner(page);
+    await page
+      .addStyleTag({ content: injectionCss() })
+      .catch(() => {
+        // ignore — page might be in a transitional state; not load-blocking.
+      });
+
     await page.waitForTimeout(SETTLE_MS);
 
-    // Measure the page's true scroll extent BEFORE driving the scroll, so
-    // segment positions translate to absolute pixels accurately. If the
-    // page lazy-loads more content during the recording, the segment
-    // targets might be slightly short — still acceptable.
-    const pageScrollHeight = await measureScrollHeight(page, viewport.height);
-    const segments = generateScrollSegments({
-      screenshotHeight: pageScrollHeight,
-      viewportHeight: viewport.height,
-      durationSec: input.durationSec,
-    });
-    const maxPan = Math.max(0, pageScrollHeight - viewport.height);
+    // Anchor the "useful content begins here" timestamp. Everything before
+    // this point — navigation, hydration, cookie clicks, settle — gets
+    // skipped by the renderer via ffmpeg `-ss`, so the output never shows
+    // a blank/loading page even on heavy sites.
+    const videoStartOffsetSec = Math.max(0, (Date.now() - startedAt) / 1000);
 
-    await driveScroll(page, segments, maxPan, input.durationSec);
+    let scrollMode: 'pan' | 'static' = input.scrollMode === 'static' ? 'static' : 'pan';
+    if ((input.scrollMode ?? 'auto') === 'auto') {
+      // Probe whether programmatic scroll actually moves the page. Catches
+      // scroll-locked sites (overflow:hidden), scroll-jacked sites that
+      // intercept and cancel wheel/scroll events (sirmary-style), and
+      // short pages that fit in one viewport with nothing to pan over.
+      const locked = await detectScrollLocked(page, viewport.height);
+      scrollMode = locked ? 'static' : 'pan';
+    }
+
+    if (scrollMode === 'static') {
+      // Hold the page at the top for the full duration. Hero videos and
+      // on-page animations still play (the heartbeat keeps the encoder
+      // active), but we don't trigger any scroll-linked motion. Useful
+      // for sites whose hero shifts/scales beyond viewport on scroll.
+      await page.evaluate(`window.scrollTo(0, 0)`);
+      await page.waitForTimeout(input.durationSec * 1000);
+    } else {
+      // Measure the page's true scroll extent BEFORE driving the scroll, so
+      // segment positions translate to absolute pixels accurately. If the
+      // page lazy-loads more content during the recording, the segment
+      // targets might be slightly short — still acceptable.
+      const pageScrollHeight = await measureScrollHeight(page, viewport.height);
+      const segments = generateScrollSegments({
+        screenshotHeight: pageScrollHeight,
+        viewportHeight: viewport.height,
+        durationSec: input.durationSec,
+      });
+      const maxPan = Math.max(0, pageScrollHeight - viewport.height);
+
+      await driveScroll(page, segments, maxPan, input.durationSec);
+    }
 
     const video = page.video();
     await page.close();
@@ -118,6 +255,7 @@ export async function recordWebsite(input: RecordInput): Promise<RecordResult> {
       durationSec: input.durationSec,
       capturedAtMs: Date.now(),
       durationMs: Date.now() - startedAt,
+      videoStartOffsetSec,
     };
   } catch (err) {
     if (err instanceof CaptureError) throw err;
@@ -167,6 +305,13 @@ function validateInput(input: RecordInput): void {
   }
 }
 
+function isPlaywrightTimeout(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  // Playwright signals timeouts with `TimeoutError` and a "Timeout NNNNms
+  // exceeded" message body. Match both so we catch the variants.
+  return err.name === 'TimeoutError' || /Timeout\s+\d+ms\s+exceeded/i.test(err.message);
+}
+
 function classifyNavError(err: unknown): CaptureError {
   const msg = err instanceof Error ? err.message : String(err);
   if (/Timeout|timeout/.test(msg)) return new CaptureError('timeout', msg, err);
@@ -184,11 +329,216 @@ async function ensureBrowser(): Promise<Browser> {
       chromium.use(StealthPlugin());
       stealthApplied = true;
     }
-    const browser = (await playwrightExtra.chromium.launch({ headless: true })) as Browser;
+    const browser = (await playwrightExtra.chromium.launch({
+      headless: true,
+      args: [
+        // Pin the device pixel ratio to 1 so a page never renders at the
+        // host monitor's DPR (intermittent on macOS where Chromium will
+        // pick up the laptop's 2× by default and the recording comes out
+        // looking "zoomed in").
+        '--force-device-scale-factor=1',
+        // Hero videos should play immediately — most pages mark them
+        // `<video autoplay muted>` but Chromium's autoplay heuristics
+        // sometimes still block until a user gesture. Allow autoplay
+        // everywhere; we're not browsing real user content.
+        '--autoplay-policy=no-user-gesture-required',
+        // Headless tabs are treated as "backgrounded" by default and
+        // Chromium throttles timers + rAF. Disabling stops the page
+        // animations from running at single-digit fps during the
+        // recording.
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+        '--disable-backgrounding-occluded-windows',
+        // Some pages intersection-observer their hero video and only
+        // hydrate it when scrolled into view. Disabling lazy loading
+        // makes the above-the-fold video start playing during the
+        // settle window instead of mid-recording.
+        '--disable-features=LazyImageLoading,LazyFrameLoading',
+      ],
+    })) as Browser;
     activeBrowser = browser;
     return browser;
   })();
   return browserPromise;
+}
+
+async function waitForLayoutStable(page: Page): Promise<void> {
+  // Poll the page's scrollHeight. As long as it keeps changing, the page
+  // is still injecting content (lazy images, embeds, hydrated panels).
+  // Once it's been stable for STABILITY_REQUIRED_MS continuously we
+  // assume the layout has settled. Falls through after STABILITY_MAX_WAIT_MS
+  // so sites with infinite-scroll or live-tickers can't trap us.
+  const start = Date.now();
+  let lastHeight = -1;
+  let stableSince = Date.now();
+  while (Date.now() - start < STABILITY_MAX_WAIT_MS) {
+    let height = 0;
+    try {
+      height = (await page.evaluate(
+        `Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)`,
+      )) as number;
+    } catch {
+      // page closed / detached — return immediately, the outer settle is
+      // the safety net.
+      return;
+    }
+    if (height !== lastHeight) {
+      lastHeight = height;
+      stableSince = Date.now();
+    } else if (Date.now() - stableSince >= STABILITY_REQUIRED_MS) {
+      return;
+    }
+    await page.waitForTimeout(STABILITY_POLL_MS);
+  }
+}
+
+async function waitForVisualReadiness(page: Page): Promise<void> {
+  // Two concrete signals that the page is visually stable:
+  //
+  //   1. `document.fonts.ready` resolves once every @font-face declaration
+  //      has finished loading. Without this, the first second of the
+  //      recording often shows the fallback system font that swaps to the
+  //      brand font mid-scroll — particularly bad for landing pages with
+  //      large hero typography.
+  //
+  //   2. All `<img>` elements with `loading="eager"` (i.e. above-the-fold,
+  //      including the hero) finish loading. Lazy-loaded images further
+  //      down the page are intentionally not waited for; driveScroll's
+  //      scrolling will trigger their loading naturally during the
+  //      recording.
+  //
+  // Both are bounded so a busted CDN can't stall the entire capture.
+  await page
+    .evaluate(
+      `(async () => {
+        try {
+          if (document.fonts && typeof document.fonts.ready?.then === 'function') {
+            await Promise.race([
+              document.fonts.ready,
+              new Promise((r) => setTimeout(r, ${FONTS_READY_BUDGET_MS})),
+            ]);
+          }
+        } catch (e) {}
+        try {
+          const eager = Array.from(document.images).filter(
+            (img) => img.getAttribute('loading') !== 'lazy' && !img.complete,
+          );
+          if (eager.length > 0) {
+            await Promise.race([
+              Promise.all(eager.map((img) => new Promise((r) => {
+                img.addEventListener('load', r, { once: true });
+                img.addEventListener('error', r, { once: true });
+              }))),
+              new Promise((r) => setTimeout(r, ${FONTS_READY_BUDGET_MS})),
+            ]);
+          }
+        } catch (e) {}
+      })()`,
+    )
+    .catch(() => {
+      // ignore — the SETTLE_MS pause is the safety net for any path that
+      // throws (page closed, evaluate timeout, etc).
+    });
+}
+
+async function dismissCookieBanner(page: Page): Promise<boolean> {
+  // Some banners inject AFTER networkidle (e.g. via deferred JS or a
+  // microtask after consent SDK init). One immediate attempt + a second
+  // attempt after a short wait catches both fast and slow-loading
+  // banners without paying the cost when there's nothing to dismiss.
+  if (await dismissCookieBannerOnce(page)) return true;
+  await page.waitForTimeout(700);
+  return dismissCookieBannerOnce(page);
+}
+
+async function dismissCookieBannerOnce(page: Page): Promise<boolean> {
+  // Iterate every frame — many CMPs (TrustArc, SourcePoint, some Quantcast
+  // deployments) render the consent UI inside an iframe so the main-frame
+  // locator returns nothing. `page.frames()` includes the main frame.
+  for (const frame of page.frames()) {
+    if (await tryDismissInFrame(frame)) return true;
+  }
+  return false;
+}
+
+async function tryDismissInFrame(frame: import('playwright').Frame): Promise<boolean> {
+  // First-pass: a SINGLE combined CSS selector spanning every known CMP
+  // library. One round-trip to the frame either finds an accept button
+  // or doesn't — much faster than polling each selector individually.
+  const combinedSelector = COOKIE_ACCEPT_SELECTORS.join(', ');
+  try {
+    const locator = frame.locator(combinedSelector).first();
+    if ((await locator.count()) > 0) {
+      await locator.waitFor({ state: 'visible', timeout: COOKIE_CLICK_TIMEOUT_MS });
+      await locator.click({ timeout: COOKIE_CLICK_TIMEOUT_MS, force: true });
+      return true;
+    }
+  } catch {
+    // Element disappeared between count and click, frame detached, or
+    // click intercepted — fall through to the text fallback.
+  }
+
+  // Fallback: query every visible button-like element and regex-match
+  // its accessible text against COOKIE_ACCEPT_TEXT_PATTERNS. Catches
+  // bespoke banners — common on B2B/agency sites — and non-English
+  // sites where the button is labelled "Akzeptieren", "Accepter", etc.
+  try {
+    // `:visible` is a Playwright pseudo. We also include role="button" and
+    // <a> elements that some banners use instead of <button>.
+    const candidates = await frame
+      .locator('button:visible, [role="button"]:visible, a[href]:visible')
+      .all();
+    for (const handle of candidates) {
+      const text = (await handle.textContent())?.trim() ?? '';
+      if (!text || text.length > 40) continue;
+      if (COOKIE_ACCEPT_TEXT_PATTERNS.some((re) => re.test(text))) {
+        await handle.click({ timeout: COOKIE_CLICK_TIMEOUT_MS, force: true });
+        return true;
+      }
+    }
+  } catch {
+    // ignore — caller's CSS hide is the safety net.
+  }
+  return false;
+}
+
+async function detectScrollLocked(page: Page, viewportHeight: number): Promise<boolean> {
+  // Behavioral probe: tell the page to scroll, wait for it to settle, and
+  // see whether scrollY actually moved. Sites that fall through to "true"
+  // (locked) are:
+  //   - scroll-jacked (Locomotive/Lenis/custom wheel handlers that cancel
+  //     programmatic scrolls)
+  //   - overflow:hidden on body/html
+  //   - shorter than the viewport (nothing to scroll past)
+  //
+  // We restore scrollY=0 before returning so driveScroll starts cleanly.
+  // On any error (page closed, evaluate failed), default to NOT locked so
+  // the caller proceeds with the user's original mode preference.
+  try {
+    const probe = (await page.evaluate(
+      `(async () => {
+        const target = 200;
+        const before = window.scrollY || document.documentElement.scrollTop || 0;
+        window.scrollTo(0, target);
+        await new Promise((r) => setTimeout(r, 200));
+        const after = window.scrollY || document.documentElement.scrollTop || 0;
+        const scrollHeight = Math.max(
+          document.documentElement.scrollHeight,
+          document.body ? document.body.scrollHeight : 0
+        );
+        window.scrollTo(0, before);
+        return { delta: after - before, scrollHeight, innerHeight: window.innerHeight };
+      })()`,
+    )) as { delta: number; scrollHeight: number; innerHeight: number };
+    // Scroll didn't move (within 50 px tolerance for partial scrolls)?
+    if (probe.delta < 150) return true;
+    // Page is no taller than the viewport plus a small margin? Nothing
+    // useful to pan over.
+    if (probe.scrollHeight <= viewportHeight + 100) return true;
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 async function measureScrollHeight(page: Page, viewportHeight: number): Promise<number> {
@@ -204,6 +554,125 @@ async function measureScrollHeight(page: Page, viewportHeight: number): Promise<
     return Math.round(viewportHeight * FALLBACK_PAGE_HEIGHT_RATIO);
   }
   return result;
+}
+
+function buildInitScript(): string {
+  // Two responsibilities, both wired before any page script runs:
+  //
+  //  1. Heartbeat element. Pin a 1×1 transparent element to the top-left
+  //     and animate it via CSS keyframes. Playwright's video encoder
+  //     skips frames on visually-static pages — driveScroll's initial
+  //     pause holds scrollY=0, which the browser deduplicates, so the
+  //     encoder can drop the entire first ~second of recording on a
+  //     fresh browser context. A continuous compositor-level animation
+  //     guarantees a frame change every refresh and keeps the video
+  //     timeline aligned with wall-clock.
+  //
+  //  2. Force-play every <video>. Many pages don't use the `autoplay`
+  //     attribute — they invoke `.play()` from JS conditioned on
+  //     `document.visibilityState`, a user-interaction flag, or an
+  //     IntersectionObserver "in view" trigger. In headless those
+  //     conditions often come back "no" and the hero video sits on its
+  //     poster for the entire recording. We call `.play()` on every
+  //     <video> at mount time (and on every DOM mutation, for late-
+  //     hydrated SPA frames). Errors are swallowed — calling `.play()`
+  //     on an already-playing video is a cheap no-op.
+  //
+  // Body is a string to dodge the bundler __name() wrapper that breaks
+  // page.evaluate-style serialization.
+  const cssLiteral = JSON.stringify(
+    `@keyframes __loom_morph_heartbeat__ { 0% { transform: translate3d(0,0,0) } 50% { transform: translate3d(0.5px,0,0) } 100% { transform: translate3d(0,0,0) } }\n` +
+      `[data-loom-morph="heartbeat"] { position: fixed; top: 0; left: 0; width: 2px; height: 2px; pointer-events: none; z-index: 2147483647; background: rgba(0,0,0,0.01); will-change: transform; animation: __loom_morph_heartbeat__ 32ms linear infinite; }`,
+  );
+  return `
+    (() => {
+      const css = ${cssLiteral};
+      // Track videos we've already kicked. Calling .play() repeatedly on
+      // the same element spawns orphan promises and can stall the
+      // compositor on busy pages.
+      const kicked = new WeakSet();
+      const playAllVideos = () => {
+        try {
+          const videos = document.querySelectorAll('video');
+          for (let i = 0; i < videos.length; i++) {
+            const v = videos[i];
+            if (kicked.has(v)) continue;
+            kicked.add(v);
+            try {
+              // Mark muted/playsinline so autoplay restrictions can't
+              // block us even on browsers that ignore the launch flag.
+              v.muted = true;
+              v.setAttribute('muted', '');
+              v.setAttribute('playsinline', '');
+              const p = v.play();
+              if (p && typeof p.catch === 'function') {
+                p.catch(() => {
+                  // Retry once: some videos reject on the first call
+                  // because metadata hasn't loaded, then accept on the
+                  // 'loadedmetadata' event.
+                  v.addEventListener('loadedmetadata', () => {
+                    const retry = v.play();
+                    if (retry && typeof retry.catch === 'function') retry.catch(() => {});
+                  }, { once: true });
+                });
+              }
+            } catch (e) {}
+          }
+        } catch (e) {}
+      };
+      const inject = () => {
+        const target = document.head || document.documentElement;
+        if (!target) return false;
+        const style = document.createElement('style');
+        style.setAttribute('data-loom-morph', 'heartbeat-style');
+        style.textContent = css;
+        target.appendChild(style);
+        const ensureHeartbeat = () => {
+          if (!document.body) return false;
+          if (document.querySelector('[data-loom-morph="heartbeat"]')) return true;
+          const beat = document.createElement('div');
+          beat.setAttribute('data-loom-morph', 'heartbeat');
+          document.body.appendChild(beat);
+          return true;
+        };
+        if (!ensureHeartbeat()) {
+          const bodyObs = new MutationObserver(() => {
+            if (ensureHeartbeat()) bodyObs.disconnect();
+          });
+          bodyObs.observe(document.documentElement, { childList: true, subtree: true });
+        }
+        return true;
+      };
+      if (!inject()) {
+        const obs = new MutationObserver(() => { if (inject()) obs.disconnect(); });
+        obs.observe(document, { childList: true, subtree: true });
+      }
+      // Video kicker. Fire on initial mount + on every DOM mutation so
+      // SPA route changes and lazy-mounted videos also get force-played.
+      // Also fires when visibility changes — some pages pause on
+      // visibilitychange and our flag tells them we're always visible.
+      const startVideoObserver = () => {
+        playAllVideos();
+        const videoObs = new MutationObserver(playAllVideos);
+        videoObs.observe(document.body || document.documentElement, {
+          childList: true,
+          subtree: true,
+        });
+        document.addEventListener('visibilitychange', playAllVideos);
+      };
+      if (document.body) {
+        startVideoObserver();
+      } else {
+        const bodyWait = new MutationObserver(() => {
+          if (document.body) {
+            bodyWait.disconnect();
+            startVideoObserver();
+          }
+        });
+        bodyWait.observe(document.documentElement, { childList: true, subtree: true });
+      }
+    })();
+  `;
 }
 
 async function driveScroll(

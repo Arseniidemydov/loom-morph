@@ -227,6 +227,84 @@ describe('BatchOrchestrator', () => {
     db.close();
   });
 
+  it('resolves {company} against common header aliases (Company, Account, Company Name)', async () => {
+    const seenOutputs: string[] = [];
+    const render: RenderFn = async ({ outputPath }) => {
+      seenOutputs.push(outputPath);
+      return { outputPath, durationMs: 1 };
+    };
+
+    const db = createDbClient({ filename: ':memory:' });
+    const orch = new BatchOrchestrator({
+      capture: successCapture,
+      render,
+      db,
+      paths: fakePaths,
+      uuid: uuidGen(),
+    });
+
+    const batch: BatchInput = {
+      id: 'batch-1',
+      config: { ...baseConfig, filenameTemplate: '{company}.mp4' },
+      leads: [
+        // Spreadsheet-style "Company" header (capitalized).
+        { rowIndex: 0, website: 'https://a.example', csvData: { Company: 'Acme' } },
+        // HubSpot-style "Company Name" header (space).
+        { rowIndex: 1, website: 'https://b.example', csvData: { 'Company Name': 'Northwind' } },
+        // Salesforce-style "Account" header.
+        { rowIndex: 2, website: 'https://c.example', csvData: { Account: 'Globex' } },
+      ],
+      circleSourcePath: '/tmp/circle.png',
+      circleHasAudio: false,
+    };
+    await collect(orch.runBatch(batch));
+
+    const filenames = seenOutputs.map((p) => p.split('/').at(-1));
+    expect(filenames).toContain('Acme.mp4');
+    expect(filenames).toContain('Northwind.mp4');
+    expect(filenames).toContain('Globex.mp4');
+    db.close();
+  });
+
+  it('{company} falls back to first name when no company column is present', async () => {
+    const seenOutputs: string[] = [];
+    const render: RenderFn = async ({ outputPath }) => {
+      seenOutputs.push(outputPath);
+      return { outputPath, durationMs: 1 };
+    };
+
+    const db = createDbClient({ filename: ':memory:' });
+    const orch = new BatchOrchestrator({
+      capture: successCapture,
+      render,
+      db,
+      paths: fakePaths,
+      uuid: uuidGen(),
+    });
+
+    const batch: BatchInput = {
+      id: 'batch-1',
+      config: { ...baseConfig, filenameTemplate: '{company} and vibeflow.mp4' },
+      leads: [
+        // No company column — should resolve to first name.
+        { rowIndex: 0, website: 'https://a.example', csvData: { firstName: 'Anna' } },
+        // Has company column — uses it.
+        { rowIndex: 1, website: 'https://b.example', csvData: { Company: 'Northwind' } },
+        // Full-name column "Name" — split to first word.
+        { rowIndex: 2, website: 'https://c.example', csvData: { 'First Name': 'Bjorn Eriksson' } },
+      ],
+      circleSourcePath: '/tmp/circle.png',
+      circleHasAudio: false,
+    };
+    await collect(orch.runBatch(batch));
+
+    const filenames = seenOutputs.map((p) => p.split('/').at(-1));
+    expect(filenames).toContain('Anna and vibeflow.mp4');
+    expect(filenames).toContain('Northwind and vibeflow.mp4');
+    expect(filenames).toContain('Bjorn and vibeflow.mp4');
+    db.close();
+  });
+
   it('renders filename template with csvData; falls back when token missing', async () => {
     const seenOutputs: string[] = [];
     const render: RenderFn = async ({ outputPath }) => {

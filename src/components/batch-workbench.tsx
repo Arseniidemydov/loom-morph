@@ -1,6 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import Papa from 'papaparse';
 import type {
   BatchEvent,
@@ -8,9 +15,11 @@ import type {
   CirclePosition,
   CircleSize,
   LeadStatus,
+  RecordingScrollMode,
   Resolution,
 } from '@/types';
 import { normalizeWebsite } from '@/lib/url';
+import { BatchHistoryPanel } from './batch-history-panel';
 
 type CsvRow = Record<string, string>;
 
@@ -22,6 +31,17 @@ interface StartBatchResponse {
   eventsUrl: string;
   reportUrl: string;
   archiveUrl: string;
+  error?: string;
+}
+
+interface BatchSnapshotResponse {
+  batchId: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  total: number;
+  reportUrl: string;
+  archiveUrl: string;
+  eventsUrl: string;
+  leads: LeadPreview[];
   error?: string;
 }
 
@@ -46,46 +66,14 @@ interface LeadPreview {
   error?: string;
 }
 
-const SAMPLE_LEADS: LeadPreview[] = [
-  {
-    id: 'sample-1',
-    rowIndex: 0,
-    website: 'https://acme.example',
-    company: 'Acme',
-    status: 'pending',
-    progress: 0,
-  },
-  {
-    id: 'sample-2',
-    rowIndex: 1,
-    website: 'https://northwind.example',
-    company: 'Northwind',
-    status: 'pending',
-    progress: 0,
-  },
-  {
-    id: 'sample-3',
-    rowIndex: 2,
-    website: 'https://globex.example',
-    company: 'Globex',
-    status: 'pending',
-    progress: 0,
-  },
-];
-
-// Dev-time defaults so the page lands ready-to-run. Files live under
-// public/test-assets/ and are served as static URLs by Next.
-const PREFILL = {
-  csv: '/test-assets/leads.csv',
-  csvName: 'leads.csv',
-  circleImage: '/test-assets/circle.png',
-  circleImageName: 'circle.png',
-  circleVideo: '/test-assets/circle.mp4',
-  circleVideoName: 'circle.mp4',
-  audioName: 'narration.mp3',
-} as const;
-
-const MAX_BATCH_LEADS = 3;
+const MAX_BATCH_LEADS = 1000;
+const LAST_BATCH_KEY = 'loom-morph:last-batch-id';
+const LEFT_COLUMN_WIDTH_KEY = 'loom-morph:left-column-width';
+const RIGHT_COLUMN_WIDTH_KEY = 'loom-morph:right-column-width';
+const DEFAULT_LEFT_COLUMN_WIDTH = 330;
+const DEFAULT_RIGHT_COLUMN_WIDTH = 313;
+const LEFT_COLUMN_BOUNDS = { min: 280, max: 460 };
+const RIGHT_COLUMN_BOUNDS = { min: 280, max: 480 };
 
 const SIZE_LABELS: Record<CircleSize, string> = {
   S: '200 px',
@@ -104,19 +92,6 @@ const CIRCLE_ACCEPT: Record<CircleSourceMode, string> = {
   video: 'video/mp4,video/quicktime,video/webm,video/x-matroska',
 };
 
-const CIRCLE_PREFILL: Record<CircleSourceMode, { url: string; name: string; type: string }> = {
-  image: {
-    url: PREFILL.circleImage,
-    name: PREFILL.circleImageName,
-    type: 'image/png',
-  },
-  video: {
-    url: PREFILL.circleVideo,
-    name: PREFILL.circleVideoName,
-    type: 'video/mp4',
-  },
-};
-
 export function BatchWorkbench() {
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [circleFile, setCircleFile] = useState<File | null>(null);
@@ -124,6 +99,10 @@ export function BatchWorkbench() {
   const [circleMode, setCircleMode] = useState<CircleSourceMode>('image');
   const [circleHasAudio, setCircleHasAudio] = useState(true);
   const [circlePreviewUrl, setCirclePreviewUrl] = useState('');
+  // Source aspect ratio (w/h). Used to size the preview media so BOTH axes
+  // overflow the bubble — without this, object-fit:cover makes one axis
+  // exact-fit and the X or Y slider does nothing.
+  const [circleSourceAR, setCircleSourceAR] = useState(1);
   const [circleCropScale, setCircleCropScale] = useState(1);
   const [circleCropX, setCircleCropX] = useState(0);
   const [circleCropY, setCircleCropY] = useState(0);
@@ -133,27 +112,36 @@ export function BatchWorkbench() {
   const [csvDataset, setCsvDataset] = useState<CsvDataset | null>(null);
   const [websiteColumn, setWebsiteColumn] = useState('');
   const [companyColumn, setCompanyColumn] = useState('');
-  const [leads, setLeads] = useState<LeadPreview[]>(SAMPLE_LEADS);
-  const [parseMessage, setParseMessage] = useState('Sample batch loaded');
+  const [leads, setLeads] = useState<LeadPreview[]>([]);
+  const [parseMessage, setParseMessage] = useState('Upload a CSV to begin');
   const [prospectLimit, setProspectLimit] = useState(MAX_BATCH_LEADS);
   const [durationSec, setDurationSec] = useState(30);
-  const [resolution, setResolution] = useState<Resolution>('720p');
+  const [resolution, setResolution] = useState<Resolution>('1080p');
   // 'screenshot' (fast, parallelizable) vs 'recording' (real motion;
   // needed for sites with hero videos / parallax). See D-019.
-  const [captureMode, setCaptureMode] = useState<CaptureMode>('screenshot');
+  const [captureMode, setCaptureMode] = useState<CaptureMode>('recording');
+  const [recordingScrollMode, setRecordingScrollMode] = useState<RecordingScrollMode>('auto');
+  const [smoothMotion, setSmoothMotion] = useState(false);
   const [circleSize, setCircleSize] = useState<CircleSize>('M');
   const [circlePosition, setCirclePosition] =
-    useState<CirclePosition>('bottom-right');
-  const [filenameTemplate, setFilenameTemplate] = useState('{company}.mp4');
+    useState<CirclePosition>('bottom-left');
+  const [filenameTemplate, setFilenameTemplate] = useState('{company} and vibeflow.mp4');
+  const [batchName, setBatchName] = useState('');
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
   const [batchId, setBatchId] = useState('');
   const [reportUrl, setReportUrl] = useState('');
   const [archiveUrl, setArchiveUrl] = useState('');
   const [runError, setRunError] = useState('');
-  const [previewWebsite, setPreviewWebsite] = useState(SAMPLE_LEADS[0]?.website ?? '');
+  const [selectedPreviewLeadId, setSelectedPreviewLeadId] = useState('');
+  const [previewWebsite, setPreviewWebsite] = useState('');
+  const [leftColumnWidth, setLeftColumnWidth] = useState(DEFAULT_LEFT_COLUMN_WIDTH);
+  const [rightColumnWidth, setRightColumnWidth] = useState(DEFAULT_RIGHT_COLUMN_WIDTH);
+  const [activeResizeSide, setActiveResizeSide] = useState<'left' | 'right' | null>(null);
   const previewWebsiteTouchedRef = useRef(false);
-  const userSelectedCircleRef = useRef(false);
-  const circleLoadRequestRef = useRef(0);
+  const restoredBatchRef = useRef(false);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const layoutGridRef = useRef<HTMLDivElement | null>(null);
 
   const summary = useMemo(() => {
     const done = leads.filter((lead) => lead.status === 'done').length;
@@ -193,20 +181,52 @@ export function BatchWorkbench() {
     };
   }, [csvDataset, prospectLimit, websiteColumn]);
 
-  const availableProspectCount = websiteColumnStats?.usable ?? leads.length;
-  const maxProspectLimit = Math.max(
-    1,
-    Math.min(availableProspectCount || MAX_BATCH_LEADS, MAX_BATCH_LEADS),
-  );
+  // Prospect-limit input is bounded by the global ceiling, not by the CSV's
+  // current row count — so the user can set a target (e.g. 500) before
+  // uploading the CSV, and a tiny test CSV doesn't snap the field to its
+  // row count. The actual queued count is still clamped by the CSV's
+  // usable rows in `websiteColumnStats.queued`.
+  const maxProspectLimit = MAX_BATCH_LEADS;
 
   const normalizedPreviewWebsite = useMemo(
     () => normalizeWebsite(previewWebsite) ?? '',
     [previewWebsite],
   );
+  const renderedLeads = useMemo(
+    () => leads.filter((lead) => lead.status === 'done' && lead.outputPath),
+    [leads],
+  );
+  const selectedRenderedLead = useMemo(
+    () =>
+      renderedLeads.find((lead) => lead.id === selectedPreviewLeadId) ??
+      renderedLeads[0] ??
+      null,
+    [renderedLeads, selectedPreviewLeadId],
+  );
+  const selectedRenderedVideoUrl =
+    batchId && selectedRenderedLead
+      ? `/api/batches/${encodeURIComponent(batchId)}/videos/${encodeURIComponent(
+          selectedRenderedLead.id,
+        )}`
+      : '';
+  const canDownloadArchive = archiveUrl !== '' && !isRunning && summary.done > 0;
+
+  useEffect(() => {
+    const savedLeft = readStoredColumnWidth(LEFT_COLUMN_WIDTH_KEY, LEFT_COLUMN_BOUNDS);
+    const savedRight = readStoredColumnWidth(RIGHT_COLUMN_WIDTH_KEY, RIGHT_COLUMN_BOUNDS);
+    if (savedLeft !== null) setLeftColumnWidth(savedLeft);
+    if (savedRight !== null) setRightColumnWidth(savedRight);
+
+    return () => {
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!circleFile) {
       setCirclePreviewUrl('');
+      setCircleSourceAR(1);
       return;
     }
 
@@ -217,67 +237,73 @@ export function BatchWorkbench() {
     };
   }, [circleFile]);
 
-  // Auto-load test assets on first mount so the page is immediately usable
-  // for dev work. The user can still upload new files via the inputs to
-  // override.
+  // Probe the source's aspect ratio. Triggers when the preview URL or mode
+  // changes. Defaults to 1 (square) on any failure so the bubble still
+  // renders cleanly.
   useEffect(() => {
+    if (!circlePreviewUrl) {
+      setCircleSourceAR(1);
+      return;
+    }
+    let cancelled = false;
+    if (circleMode === 'image') {
+      const img = new Image();
+      img.onload = () => {
+        if (cancelled) return;
+        const ar = img.naturalHeight === 0 ? 1 : img.naturalWidth / img.naturalHeight;
+        setCircleSourceAR(Number.isFinite(ar) && ar > 0 ? ar : 1);
+      };
+      img.onerror = () => {
+        if (!cancelled) setCircleSourceAR(1);
+      };
+      img.src = circlePreviewUrl;
+    } else {
+      const video = document.createElement('video');
+      video.onloadedmetadata = () => {
+        if (cancelled) return;
+        const ar = video.videoHeight === 0 ? 1 : video.videoWidth / video.videoHeight;
+        setCircleSourceAR(Number.isFinite(ar) && ar > 0 ? ar : 1);
+      };
+      video.onerror = () => {
+        if (!cancelled) setCircleSourceAR(1);
+      };
+      video.src = circlePreviewUrl;
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [circlePreviewUrl, circleMode]);
+
+  useEffect(() => {
+    const savedBatchId = window.localStorage.getItem(LAST_BATCH_KEY);
+    if (!savedBatchId) return;
+
     let cancelled = false;
     void (async () => {
       try {
-        const resp = await fetch(PREFILL.csv);
-        if (!resp.ok) throw new Error(`fetch ${PREFILL.csv} → ${resp.status}`);
-        const csvBlob = await resp.blob();
-        const text = await csvBlob.text();
-        const audioResp = await fetch('/test-assets/narration.mp3');
-        if (cancelled) return;
-
-        const parsed = Papa.parse<CsvRow>(text, {
-          header: true,
-          skipEmptyLines: 'greedy',
-          transformHeader: cleanCsvHeader,
-          transform: (value) => value.trim(),
-        });
-        const columns = (parsed.meta.fields ?? []).filter(Boolean);
-        const inferredWebsite = inferColumn(columns, isWebsiteHeader);
-        const inferredCompany = inferColumn(columns, isCompanyHeader);
-
-        if (cancelled) return;
-        setCsvFile(new File([csvBlob], PREFILL.csvName, { type: 'text/csv' }));
-        const circleResp = await fetch(CIRCLE_PREFILL.image.url);
-        if (circleResp.ok && !cancelled && !userSelectedCircleRef.current) {
-          setCircleMode('image');
-          setCircleHasAudio(false);
-          setCircleFile(
-            new File([await circleResp.blob()], CIRCLE_PREFILL.image.name, {
-              type: CIRCLE_PREFILL.image.type,
-            }),
-          );
-          setCircleFileName(CIRCLE_PREFILL.image.name);
+        const response = await fetch(`/api/batches/${encodeURIComponent(savedBatchId)}`);
+        const body = (await response.json()) as BatchSnapshotResponse;
+        if (!response.ok) {
+          window.localStorage.removeItem(LAST_BATCH_KEY);
+          return;
         }
-        if (audioResp.ok) {
-          setAudioFile(
-            new File([await audioResp.blob()], PREFILL.audioName, {
-              type: 'audio/mpeg',
-            }),
-          );
-        }
-        setWebsiteColumn(inferredWebsite);
-        setCompanyColumn(inferredCompany);
-        setCsvDataset({
-          fileName: PREFILL.csvName,
-          rows: parsed.data,
-          columns,
-          errorCount: parsed.errors.length,
-        });
-        setCsvFileName(PREFILL.csvName);
-        setAudioFileName(PREFILL.audioName);
-      } catch (err) {
-        if (cancelled) return;
-        // Silent fallback: leave SAMPLE_LEADS in place. Dev convenience only.
-        // eslint-disable-next-line no-console
-        console.warn('[workbench] prefill skipped:', err);
+        if (cancelled || body.leads.length === 0) return;
+
+        restoredBatchRef.current = true;
+        setBatchId(body.batchId);
+        setReportUrl(body.reportUrl);
+        setArchiveUrl(body.archiveUrl);
+        setRunError('');
+        setIsRunning(false);
+        setLeads(body.leads);
+        setParseMessage(`Restored ${body.total} lead${body.total === 1 ? '' : 's'}`);
+        const firstOutput = body.leads.find((lead) => lead.status === 'done' && lead.outputPath);
+        setSelectedPreviewLeadId(firstOutput?.id ?? '');
+      } catch {
+        if (!cancelled) window.localStorage.removeItem(LAST_BATCH_KEY);
       }
     })();
+
     return () => {
       cancelled = true;
     };
@@ -314,8 +340,19 @@ export function BatchWorkbench() {
     setPreviewWebsite(leads[0]?.website ?? '');
   }, [leads]);
 
+  useEffect(() => {
+    if (renderedLeads.length === 0) {
+      if (selectedPreviewLeadId) setSelectedPreviewLeadId('');
+      return;
+    }
+    if (!renderedLeads.some((lead) => lead.id === selectedPreviewLeadId)) {
+      setSelectedPreviewLeadId(renderedLeads[0]!.id);
+    }
+  }, [renderedLeads, selectedPreviewLeadId]);
+
   function handleCsv(file: File | undefined) {
     if (!file) return;
+    closeBatchEvents();
     setCsvFile(file);
     setCsvFileName(file.name);
     setIsRunning(false);
@@ -323,6 +360,8 @@ export function BatchWorkbench() {
     setReportUrl('');
     setArchiveUrl('');
     setRunError('');
+    setSelectedPreviewLeadId('');
+    window.localStorage.removeItem(LAST_BATCH_KEY);
 
     void file
       .text()
@@ -357,11 +396,14 @@ export function BatchWorkbench() {
   }
 
   function resetRun() {
+    closeBatchEvents();
     setIsRunning(false);
     setBatchId('');
     setReportUrl('');
     setArchiveUrl('');
     setRunError('');
+    setSelectedPreviewLeadId('');
+    window.localStorage.removeItem(LAST_BATCH_KEY);
     setLeads((current) =>
       current.map((lead) => ({
         ...lead,
@@ -374,30 +416,27 @@ export function BatchWorkbench() {
   }
 
   function clearRunResult() {
+    closeBatchEvents();
     setIsRunning(false);
     setBatchId('');
     setReportUrl('');
     setArchiveUrl('');
     setRunError('');
+    setSelectedPreviewLeadId('');
+    window.localStorage.removeItem(LAST_BATCH_KEY);
   }
 
   function handleCircleMode(nextMode: CircleSourceMode) {
     if (nextMode === circleMode && circleFile) return;
-    userSelectedCircleRef.current = false;
     setCircleMode(nextMode);
     setCircleHasAudio(nextMode === 'video');
     setCircleFile(null);
     setCircleFileName('');
     clearRunResult();
-    void loadDefaultCircle(nextMode);
   }
 
   function handleCircleFile(file: File | null) {
     if (!file) return;
-
-    userSelectedCircleRef.current = true;
-    circleLoadRequestRef.current += 1;
-
     const inferredMode = inferCircleMode(file) ?? circleMode;
     setCircleMode(inferredMode);
     setCircleHasAudio(inferredMode === 'video');
@@ -406,42 +445,15 @@ export function BatchWorkbench() {
     clearRunResult();
   }
 
-  async function loadDefaultCircle(nextMode: CircleSourceMode) {
-    const requestId = circleLoadRequestRef.current + 1;
-    circleLoadRequestRef.current = requestId;
-    const asset = CIRCLE_PREFILL[nextMode];
-
-    try {
-      const resp = await fetch(asset.url);
-      if (!resp.ok) throw new Error(`fetch ${asset.url} -> ${resp.status}`);
-      const blob = await resp.blob();
-      if (circleLoadRequestRef.current !== requestId || userSelectedCircleRef.current) {
-        return;
-      }
-
-      setCircleMode(nextMode);
-      setCircleHasAudio(nextMode === 'video');
-      setCircleFile(new File([blob], asset.name, { type: asset.type }));
-      setCircleFileName(asset.name);
-    } catch (err) {
-      if (circleLoadRequestRef.current !== requestId) return;
-      setCircleFile(null);
-      setCircleFileName('');
-      setRunError(
-        err instanceof Error
-          ? `Could not load ${asset.name}: ${err.message}`
-          : `Could not load ${asset.name}`,
-      );
-    }
-  }
-
   async function startRun() {
     if (!csvFile || !circleFile || !websiteColumn) return;
 
+    closeBatchEvents();
     setRunError('');
     setBatchId('');
     setReportUrl('');
     setArchiveUrl('');
+    setSelectedPreviewLeadId('');
     setLeads((current) =>
       current.map((lead) => ({
         ...lead,
@@ -469,8 +481,11 @@ export function BatchWorkbench() {
     form.set('circleCropX', String(circleCropX));
     form.set('circleCropY', String(circleCropY));
     form.set('captureMode', captureMode);
+    form.set('recordingScrollMode', recordingScrollMode);
+    form.set('smoothMotion', smoothMotion ? 'true' : 'false');
     form.set('filenameTemplate', filenameTemplate);
     form.set('maxLeads', String(prospectLimit));
+    if (batchName.trim()) form.set('name', batchName.trim());
 
     try {
       const response = await fetch('/api/batches', {
@@ -485,6 +500,10 @@ export function BatchWorkbench() {
       setBatchId(body.batchId);
       setReportUrl(body.reportUrl);
       setArchiveUrl(body.archiveUrl);
+      window.localStorage.setItem(LAST_BATCH_KEY, body.batchId);
+      // Pop the new batch into the history panel immediately so the user
+      // sees it without manually refreshing.
+      setHistoryRefreshKey((n) => n + 1);
       subscribeToBatch(body.eventsUrl);
     } catch (err) {
       setIsRunning(false);
@@ -493,25 +512,30 @@ export function BatchWorkbench() {
   }
 
   function subscribeToBatch(eventsUrl: string) {
+    closeBatchEvents();
     const source = new EventSource(eventsUrl);
+    eventSourceRef.current = source;
     source.onmessage = (message) => {
       const event = JSON.parse(message.data) as BatchEvent | BatchErrorEvent;
       if (event.type === 'batch-error') {
         setRunError(event.error);
         setIsRunning(false);
         source.close();
+        if (eventSourceRef.current === source) eventSourceRef.current = null;
         return;
       }
       applyBatchEvent(event);
       if (event.type === 'batch-completed') {
         setIsRunning(false);
         source.close();
+        if (eventSourceRef.current === source) eventSourceRef.current = null;
       }
     };
     source.onerror = () => {
       setRunError('Lost batch event stream');
       setIsRunning(false);
       source.close();
+      if (eventSourceRef.current === source) eventSourceRef.current = null;
     };
   }
 
@@ -526,6 +550,118 @@ export function BatchWorkbench() {
     }
   }
 
+  function closeBatchEvents() {
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+  }
+
+  async function openHistoryBatch(historyBatchId: string) {
+    closeBatchEvents();
+    setRunError('');
+    try {
+      const response = await fetch(`/api/batches/${encodeURIComponent(historyBatchId)}`, {
+        cache: 'no-store',
+      });
+      const body = (await response.json()) as BatchSnapshotResponse;
+      if (!response.ok) throw new Error(body.error ?? 'Could not open batch');
+
+      const running = body.status === 'pending' || body.status === 'running';
+      setBatchId(body.batchId);
+      setReportUrl(body.reportUrl);
+      setArchiveUrl(body.archiveUrl);
+      setIsRunning(running);
+      setLeads(body.leads);
+      setParseMessage(`Opened ${body.total} lead${body.total === 1 ? '' : 's'}`);
+      const firstOutput = body.leads.find((lead) => lead.status === 'done' && lead.outputPath);
+      setSelectedPreviewLeadId(firstOutput?.id ?? '');
+      window.localStorage.setItem(LAST_BATCH_KEY, body.batchId);
+      if (running) subscribeToBatch(body.eventsUrl);
+    } catch (err) {
+      setRunError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function handleHistoryBatchDeleted(deletedBatchId: string) {
+    setHistoryRefreshKey((n) => n + 1);
+    if (deletedBatchId !== batchId) return;
+    closeBatchEvents();
+    setIsRunning(false);
+    setBatchId('');
+    setReportUrl('');
+    setArchiveUrl('');
+    setSelectedPreviewLeadId('');
+    setLeads([]);
+    window.localStorage.removeItem(LAST_BATCH_KEY);
+  }
+
+  function handleHistoryVideoDeleted(
+    deletedBatchId: string,
+    leadId: string,
+    updatedLead: LeadPreview,
+  ) {
+    setHistoryRefreshKey((n) => n + 1);
+    if (deletedBatchId !== batchId) return;
+    setLeads((current) =>
+      current.map((lead) => (lead.id === leadId ? { ...lead, ...updatedLead } : lead)),
+    );
+  }
+
+  function startColumnResize(side: 'left' | 'right', event: ReactPointerEvent) {
+    const grid = layoutGridRef.current;
+    if (!grid) return;
+    event.preventDefault();
+    setActiveResizeSide(side);
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const rect = grid.getBoundingClientRect();
+      if (side === 'left') {
+        const width = clampNumber(
+          moveEvent.clientX - rect.left,
+          LEFT_COLUMN_BOUNDS.min,
+          LEFT_COLUMN_BOUNDS.max,
+        );
+        setLeftColumnWidth(width);
+      } else {
+        const width = clampNumber(
+          rect.right - moveEvent.clientX,
+          RIGHT_COLUMN_BOUNDS.min,
+          RIGHT_COLUMN_BOUNDS.max,
+        );
+        setRightColumnWidth(width);
+      }
+    };
+
+    const onPointerUp = (upEvent: PointerEvent) => {
+      const rect = grid.getBoundingClientRect();
+      let finalWidth: number;
+      if (side === 'left') {
+        finalWidth = clampNumber(
+          upEvent.clientX - rect.left,
+          LEFT_COLUMN_BOUNDS.min,
+          LEFT_COLUMN_BOUNDS.max,
+        );
+        setLeftColumnWidth(finalWidth);
+        window.localStorage.setItem(LEFT_COLUMN_WIDTH_KEY, String(Math.round(finalWidth)));
+      } else {
+        finalWidth = clampNumber(
+          rect.right - upEvent.clientX,
+          RIGHT_COLUMN_BOUNDS.min,
+          RIGHT_COLUMN_BOUNDS.max,
+        );
+        setRightColumnWidth(finalWidth);
+        window.localStorage.setItem(RIGHT_COLUMN_WIDTH_KEY, String(Math.round(finalWidth)));
+      }
+      setActiveResizeSide(null);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+  }
+
   const canStart =
     leads.length > 0 &&
     csvFile !== null &&
@@ -536,11 +672,9 @@ export function BatchWorkbench() {
   return (
     <div className="workbench">
       <header className="topbar">
-        <div className="brand-lockup">
-          <div className="brand-mark">LM</div>
-          <div className="brand-copy">
-            <h1>Loom Morph</h1>
-            <p>Batch video generator</p>
+        <div className="brand-lockup" aria-label="Loom Morph">
+          <div className="brand-mark" aria-hidden="true">
+            LM
           </div>
         </div>
         <div className="topbar-actions">
@@ -564,8 +698,422 @@ export function BatchWorkbench() {
         </div>
       </header>
 
-      <div className="layout-grid">
-        <section className="setup-column" aria-label="Batch setup">
+      <div
+        className={`layout-grid${activeResizeSide ? ' is-resizing' : ''}`}
+        ref={layoutGridRef}
+        style={
+          {
+            '--left-column-width': `${leftColumnWidth}px`,
+            '--right-column-width': `${rightColumnWidth}px`,
+          } as CSSProperties
+        }
+      >
+        <aside className="history-column" aria-label="Batch history and configuration">
+          <BatchHistoryPanel
+            onDelete={handleHistoryBatchDeleted}
+            onOpen={openHistoryBatch}
+            onVideoDelete={handleHistoryVideoDeleted}
+            refreshKey={historyRefreshKey}
+          />
+          <div className="panel">
+            <div className="panel-header">
+              <div className="panel-title">
+                <h2>Circle</h2>
+                <span>{labelPosition(circlePosition)}</span>
+              </div>
+            </div>
+            <div className="panel-body stack">
+              <div className="field">
+                <div className="field-label">Circle Size</div>
+                <div className="segmented three" role="group" aria-label="Circle size">
+                  {(['S', 'M', 'L'] as CircleSize[]).map((item) => (
+                    <button
+                      className={`segment ${circleSize === item ? 'active' : ''}`}
+                      key={item}
+                      type="button"
+                      onClick={() => setCircleSize(item)}
+                    >
+                      {SIZE_LABELS[item]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="field">
+                <div className="field-label">Circle Position</div>
+                <div className="corner-grid">
+                  {(
+                    [
+                      'top-left',
+                      'top-right',
+                      'bottom-left',
+                      'bottom-right',
+                    ] as CirclePosition[]
+                  ).map((item) => (
+                    <button
+                      className={`corner-button ${
+                        circlePosition === item ? 'active' : ''
+                      }`}
+                      key={item}
+                      type="button"
+                      onClick={() => setCirclePosition(item)}
+                    >
+                      {labelPosition(item)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="panel">
+            <div className="panel-header">
+              <div className="panel-title">
+                <h2>Preview</h2>
+                <span>{resolution}</span>
+              </div>
+            </div>
+            <div className="panel-body">
+              <div className="preview-controls">
+                <div className="field">
+                  <label htmlFor="preview-website">Preview website</label>
+                  <input
+                    className="text-input"
+                    id="preview-website"
+                    value={previewWebsite}
+                    onChange={(event) => {
+                      previewWebsiteTouchedRef.current = true;
+                      setPreviewWebsite(event.target.value);
+                    }}
+                    onBlur={() => {
+                      setPreviewWebsite(normalizeWebsite(previewWebsite) ?? previewWebsite);
+                    }}
+                  />
+                </div>
+                <div className="crop-controls">
+                  <div className="circle-crop-editor">
+                    <div className="field-label">Crop Preview</div>
+                    <CircleCropPreview
+                      className="crop-detail-bubble"
+                      mode={circleMode}
+                      previewUrl={circlePreviewUrl}
+                      sizePx={152}
+                      sourceAR={circleSourceAR}
+                      cropScale={circleCropScale}
+                      cropX={circleCropX}
+                      cropY={circleCropY}
+                    />
+                  </div>
+                  <div className="crop-slider-grid">
+                    <div className="field crop-slider-wide">
+                      <label htmlFor="circle-crop-scale">Circle crop</label>
+                      <input
+                        className="range-input"
+                        id="circle-crop-scale"
+                        min={1}
+                        max={2.5}
+                        step={0.05}
+                        type="range"
+                        value={circleCropScale}
+                        onChange={(event) => setCircleCropScale(Number(event.target.value))}
+                      />
+                    </div>
+                    <div className="field">
+                      <label htmlFor="circle-crop-x">X</label>
+                      <input
+                        className="range-input"
+                        id="circle-crop-x"
+                        min={-100}
+                        max={100}
+                        step={1}
+                        type="range"
+                        value={circleCropX}
+                        onChange={(event) => setCircleCropX(Number(event.target.value))}
+                      />
+                    </div>
+                    <div className="field">
+                      <label htmlFor="circle-crop-y">Y</label>
+                      <input
+                        className="range-input"
+                        id="circle-crop-y"
+                        min={-100}
+                        max={100}
+                        step={1}
+                        type="range"
+                        value={circleCropY}
+                        onChange={(event) => setCircleCropY(Number(event.target.value))}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="preview-frame">
+                <div className="browser-bar">
+                  <span className="dot" />
+                  <span className="dot" />
+                  <span className="dot" />
+                  {normalizedPreviewWebsite ? (
+                    <span className="browser-address">{normalizedPreviewWebsite}</span>
+                  ) : null}
+                </div>
+                {normalizedPreviewWebsite ? (
+                  <iframe
+                    className="preview-website-frame"
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                    sandbox="allow-scripts allow-same-origin"
+                    src={normalizedPreviewWebsite}
+                    title="Preview website"
+                  />
+                ) : (
+                  <div className="mock-site">
+                    <div className="mock-hero" />
+                    <div className="mock-line" />
+                    <div className="mock-line short" />
+                    <div className="mock-grid">
+                      <div className="mock-block" />
+                      <div className="mock-block" />
+                      <div className="mock-block" />
+                    </div>
+                  </div>
+                )}
+                <div
+                  className={`face-bubble bubble-${circlePosition}`}
+                  style={
+                    {
+                      '--bubble-size': BUBBLE_PREVIEW[circleSize],
+                      '--bubble-margin': '18px',
+                    } as CSSProperties
+                  }
+                >
+                  <CircleCropPreview
+                    mode={circleMode}
+                    previewUrl={circlePreviewUrl}
+                    sizePx={parseInt(BUBBLE_PREVIEW[circleSize], 10)}
+                    sourceAR={circleSourceAR}
+                    cropScale={circleCropScale}
+                    cropX={circleCropX}
+                    cropY={circleCropY}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+          <ConfigSummary
+            audioFileName={audioFileName}
+            captureMode={captureMode}
+            circleFileName={circleFileName}
+            circleHasAudio={circleHasAudio}
+            circleMode={circleMode}
+            circlePosition={circlePosition}
+            circleSize={circleSize}
+            durationSec={durationSec}
+            filenameTemplate={filenameTemplate}
+            leadsCount={leads.length}
+            resolution={resolution}
+          />
+        </aside>
+
+        <div
+          aria-label="Resize batch history"
+          aria-orientation="vertical"
+          className={`resize-handle ${activeResizeSide === 'left' ? 'active' : ''}`}
+          onPointerDown={(event) => startColumnResize('left', event)}
+          role="separator"
+        />
+
+        <section className="run-column" aria-label="Batch run">
+          <div className="summary-strip">
+            <Metric label="Selected" value={String(leads.length)} />
+            <Metric label="Processed" value={`${summary.processed}/${leads.length}`} />
+            <Metric label="Active" value={String(summary.active)} />
+            <Metric label="Done" value={String(summary.done)} />
+            <Metric label="Failed" value={String(summary.failed)} />
+          </div>
+
+          <div className="panel rendered-panel">
+            <div className="panel-header">
+              <div className="panel-title">
+                <h2>Rendered Video</h2>
+                <span>
+                  {selectedRenderedLead
+                    ? selectedRenderedLead.company
+                    : `${renderedLeads.length} ready`}
+                </span>
+              </div>
+              {renderedLeads.length > 1 ? (
+                <div className="rendered-picker" aria-label="Rendered videos">
+                  {renderedLeads.map((lead) => (
+                    <button
+                      className={`segment ${
+                        selectedRenderedLead?.id === lead.id ? 'active' : ''
+                      }`}
+                      key={lead.id}
+                      type="button"
+                      onClick={() => setSelectedPreviewLeadId(lead.id)}
+                    >
+                      {lead.rowIndex + 1}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <div className="panel-body">
+              {selectedRenderedVideoUrl && selectedRenderedLead ? (
+                <div className="rendered-preview">
+                  <video
+                    key={selectedRenderedVideoUrl}
+                    className="rendered-video"
+                    controls
+                    playsInline
+                    preload="metadata"
+                    src={selectedRenderedVideoUrl}
+                  />
+                </div>
+              ) : (
+                <div className="video-empty">
+                  <strong>No rendered video</strong>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    alt=""
+                    className="video-empty-gif"
+                    src="/what-huh.gif"
+                  />
+                  <span>{isRunning ? 'Rendering' : 'Waiting'}</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="panel progress-panel">
+            <div className="panel-header">
+              <div className="panel-title">
+                <h2>Batch Progress</h2>
+                <span>{batchId ? batchId.slice(0, 8) : `${summary.totalProgress}%`}</span>
+              </div>
+              <div className="toolbar">
+                <a
+                  className={`button ${canDownloadArchive ? '' : 'disabled-link'}`}
+                  href={archiveUrl || '#'}
+                  aria-disabled={!canDownloadArchive}
+                  download={batchId ? `${batchId}-videos.zip` : undefined}
+                  tabIndex={canDownloadArchive ? undefined : -1}
+                  onClick={(event) => {
+                    if (!canDownloadArchive) event.preventDefault();
+                  }}
+                  title={
+                    canDownloadArchive
+                      ? `Download ${summary.done} rendered video${
+                          summary.done === 1 ? '' : 's'
+                        } as a zip`
+                      : 'Batch zip is available after the run finishes with at least one rendered video'
+                  }
+                >
+                  <span className="icon" aria-hidden="true">
+                    ↓
+                  </span>
+                  Download ZIP
+                </a>
+                <a
+                  className={`button ${reportUrl && !isRunning ? '' : 'disabled-link'}`}
+                  href={reportUrl || '#'}
+                  aria-disabled={!reportUrl || isRunning}
+                  tabIndex={reportUrl && !isRunning ? undefined : -1}
+                  onClick={(event) => {
+                    if (!reportUrl || isRunning) event.preventDefault();
+                  }}
+                >
+                  <span className="icon" aria-hidden="true">
+                    #
+                  </span>
+                  Report
+                </a>
+              </div>
+            </div>
+            <div className="panel-body stack">
+              <div className="progress-track" aria-label="Overall progress">
+                <div
+                  className="progress-fill"
+                  style={{ width: `${summary.totalProgress}%` }}
+                />
+              </div>
+
+              {leads.length > 0 ? (
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Row</th>
+                        <th>Company</th>
+                        <th>Website</th>
+                        <th>Status</th>
+                        <th>Progress</th>
+                        <th>Output</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {leads.map((lead) => (
+                        <tr key={lead.id}>
+                          <td>{lead.rowIndex + 1}</td>
+                          <td>{lead.company}</td>
+                          <td className="url-cell">{lead.website}</td>
+                          <td>
+                            <span className={`status-pill status-${lead.status}`}>
+                              {lead.status}
+                            </span>
+                          </td>
+                          <td>
+                            <div className="progress-track">
+                              <div
+                                className="progress-fill"
+                                style={{ width: `${lead.progress}%` }}
+                              />
+                            </div>
+                          </td>
+                          <td>
+                            {lead.error ? (
+                              lead.error
+                            ) : lead.outputPath && batchId ? (
+                              <button
+                                className="button small"
+                                type="button"
+                                onClick={() => setSelectedPreviewLeadId(lead.id)}
+                              >
+                                Preview
+                              </button>
+                            ) : (
+                              '-'
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="empty-state">
+                  <div>
+                    <strong>No leads</strong>
+                    <p>
+                      {csvDataset
+                        ? 'Choose the column that contains each lead website.'
+                        : 'Upload a CSV with lead websites.'}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <div
+          aria-label="Resize settings"
+          aria-orientation="vertical"
+          className={`resize-handle ${activeResizeSide === 'right' ? 'active' : ''}`}
+          onPointerDown={(event) => startColumnResize('right', event)}
+          role="separator"
+        />
+
+        <aside className="setup-column" aria-label="Batch setup">
           <div className="panel">
             <div className="panel-header">
               <div className="panel-title">
@@ -575,16 +1123,28 @@ export function BatchWorkbench() {
             </div>
             <div className="panel-body stack">
               <div className="field">
-                <label htmlFor="csv-file">Lead CSV</label>
+                <label htmlFor="batch-name">Batch name</label>
                 <input
-                  className="file-input"
-                  id="csv-file"
-                  type="file"
+                  className="text-input"
+                  id="batch-name"
+                  type="text"
+                  placeholder="e.g. Q2 outreach — Acme"
+                  value={batchName}
+                  onChange={(event) => setBatchName(event.target.value)}
+                />
+                <span className="field-hint">
+                  Leave blank to auto-name from today's date. You can rename later from the history list.
+                </span>
+              </div>
+              <div className="field">
+                <label htmlFor="csv-file">Lead CSV</label>
+                <StyledFileInput
                   accept=".csv,text/csv"
-                  onChange={(event) => {
-                    handleCsv(event.target.files?.[0]);
-                    event.currentTarget.value = '';
-                  }}
+                  id="csv-file"
+                  label="Select CSV"
+                  value={csvFileName}
+                  placeholder="No CSV selected"
+                  onSelect={handleCsv}
                 />
               </div>
               <div className="field">
@@ -601,22 +1161,29 @@ export function BatchWorkbench() {
                     </button>
                   ))}
                 </div>
-                <input
-                  className="file-input"
-                  id="circle-file"
-                  type="file"
+                <StyledFileInput
                   accept={CIRCLE_ACCEPT[circleMode]}
-                  onChange={(event) => {
-                    handleCircleFile(event.target.files?.[0] ?? null);
-                    event.currentTarget.value = '';
-                  }}
+                  id="circle-file"
+                  label="Select source"
+                  value={circleFileName}
+                  placeholder="No source selected"
+                  onSelect={(file) => handleCircleFile(file ?? null)}
                 />
                 {circleMode === 'video' ? (
                   <label className="check-row">
                     <input
                       type="checkbox"
                       checked={circleHasAudio}
-                      onChange={(event) => setCircleHasAudio(event.target.checked)}
+                      onChange={(event) => {
+                        const next = event.target.checked;
+                        setCircleHasAudio(next);
+                        // Drop any previously selected MP3 so the chip + form
+                        // submission stay consistent with what's effective.
+                        if (next) {
+                          setAudioFile(null);
+                          setAudioFileName('');
+                        }
+                      }}
                     />
                     <span>Use circle video audio</span>
                   </label>
@@ -624,17 +1191,28 @@ export function BatchWorkbench() {
               </div>
               <div className="field">
                 <label htmlFor="audio-file">Narration MP3</label>
-                <input
-                  className="file-input"
-                  id="audio-file"
-                  type="file"
+                <StyledFileInput
                   accept="audio/mpeg"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0] ?? null;
+                  disabled={circleMode === 'video' && circleHasAudio}
+                  id="audio-file"
+                  label="Select MP3"
+                  value={audioFileName}
+                  placeholder="No narration selected"
+                  onSelect={(file) => {
+                    if (!file) return;
                     setAudioFile(file);
-                    setAudioFileName(file?.name ?? '');
+                    setAudioFileName(file.name);
                   }}
                 />
+                {circleMode === 'video' && circleHasAudio ? (
+                  <span className="field-hint">
+                    Disabled — using circle video audio. Output length matches the circle.
+                  </span>
+                ) : (
+                  <span className="field-hint">
+                    Output length matches the MP3.
+                  </span>
+                )}
               </div>
               {csvDataset && csvDataset.columns.length > 0 ? (
                 <div className="mapper-grid">
@@ -731,8 +1309,8 @@ export function BatchWorkbench() {
                   <input
                     className="text-input"
                     id="duration"
-                    min={10}
-                    max={90}
+                    min={1}
+                    max={300}
                     type="number"
                     value={durationSec}
                     onChange={(event) =>
@@ -773,6 +1351,44 @@ export function BatchWorkbench() {
                 </div>
               </div>
 
+              {captureMode === 'recording' ? (
+                <div className="field">
+                  <div className="field-label">Live capture scroll</div>
+                  <div className="segmented" role="group" aria-label="Recording scroll mode">
+                    {(['auto', 'pan', 'static'] as RecordingScrollMode[]).map((item) => (
+                      <button
+                        className={`segment ${recordingScrollMode === item ? 'active' : ''}`}
+                        key={item}
+                        type="button"
+                        onClick={() => setRecordingScrollMode(item)}
+                        title={
+                          item === 'auto'
+                            ? 'Probes the page; scrolls if it responds, holds at top if it doesn’t (scroll-locked sites, single-screen pages).'
+                            : item === 'pan'
+                              ? 'Always scrolls — useful if the auto-detect picks wrong.'
+                              : 'Always holds at top — best for sites whose hero animates wildly on scroll (agency/brand sites).'
+                        }
+                      >
+                        {item === 'auto' ? 'Auto' : item === 'pan' ? 'Scroll' : 'Hold at top'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {captureMode === 'recording' ? (
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={smoothMotion}
+                    onChange={(event) => setSmoothMotion(event.target.checked)}
+                  />
+                  <span title="Adds motion-interpolation (ffmpeg minterpolate=blend) to the rendered output so the on-page hero video reads as smooth motion. Adds roughly 50% to render time.">
+                    Smooth hero-video motion (slower render)
+                  </span>
+                </label>
+              ) : null}
+
               <div className="field">
                 <div className="field-label">Resolution</div>
                 <div className="segmented" role="group" aria-label="Resolution">
@@ -789,297 +1405,9 @@ export function BatchWorkbench() {
                 </div>
               </div>
 
-              <div className="field">
-                <div className="field-label">Circle Size</div>
-                <div className="segmented three" role="group" aria-label="Circle size">
-                  {(['S', 'M', 'L'] as CircleSize[]).map((item) => (
-                    <button
-                      className={`segment ${circleSize === item ? 'active' : ''}`}
-                      key={item}
-                      type="button"
-                      onClick={() => setCircleSize(item)}
-                    >
-                      {SIZE_LABELS[item]}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="field">
-                <div className="field-label">Circle Position</div>
-                <div className="corner-grid">
-                  {(
-                    [
-                      'top-left',
-                      'top-right',
-                      'bottom-left',
-                      'bottom-right',
-                    ] as CirclePosition[]
-                  ).map((item) => (
-                    <button
-                      className={`corner-button ${
-                        circlePosition === item ? 'active' : ''
-                      }`}
-                      key={item}
-                      type="button"
-                      onClick={() => setCirclePosition(item)}
-                    >
-                      {labelPosition(item)}
-                    </button>
-                  ))}
-                </div>
-              </div>
             </div>
           </div>
-
-          <div className="panel">
-            <div className="panel-header">
-              <div className="panel-title">
-                <h2>Preview</h2>
-                <span>{resolution}</span>
-              </div>
-            </div>
-            <div className="panel-body">
-              <div className="preview-controls">
-                <div className="field">
-                  <label htmlFor="preview-website">Preview website</label>
-                  <input
-                    className="text-input"
-                    id="preview-website"
-                    value={previewWebsite}
-                    onChange={(event) => {
-                      previewWebsiteTouchedRef.current = true;
-                      setPreviewWebsite(event.target.value);
-                    }}
-                    onBlur={() => {
-                      setPreviewWebsite(normalizeWebsite(previewWebsite) ?? previewWebsite);
-                    }}
-                  />
-                </div>
-                <div className="crop-controls">
-                  <div className="field">
-                    <label htmlFor="circle-crop-scale">Circle crop</label>
-                    <input
-                      className="range-input"
-                      id="circle-crop-scale"
-                      min={1}
-                      max={2.5}
-                      step={0.05}
-                      type="range"
-                      value={circleCropScale}
-                      onChange={(event) => setCircleCropScale(Number(event.target.value))}
-                    />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="circle-crop-x">X</label>
-                    <input
-                      className="range-input"
-                      id="circle-crop-x"
-                      min={-100}
-                      max={100}
-                      step={1}
-                      type="range"
-                      value={circleCropX}
-                      onChange={(event) => setCircleCropX(Number(event.target.value))}
-                    />
-                  </div>
-                  <div className="field">
-                    <label htmlFor="circle-crop-y">Y</label>
-                    <input
-                      className="range-input"
-                      id="circle-crop-y"
-                      min={-100}
-                      max={100}
-                      step={1}
-                      type="range"
-                      value={circleCropY}
-                      onChange={(event) => setCircleCropY(Number(event.target.value))}
-                    />
-                  </div>
-                </div>
-              </div>
-              <div className="preview-frame">
-                <div className="browser-bar">
-                  <span className="dot" />
-                  <span className="dot" />
-                  <span className="dot" />
-                  {normalizedPreviewWebsite ? (
-                    <span className="browser-address">{normalizedPreviewWebsite}</span>
-                  ) : null}
-                </div>
-                {normalizedPreviewWebsite ? (
-                  <iframe
-                    className="preview-website-frame"
-                    loading="lazy"
-                    referrerPolicy="no-referrer"
-                    sandbox="allow-scripts allow-same-origin"
-                    src={normalizedPreviewWebsite}
-                    title="Preview website"
-                  />
-                ) : (
-                  <div className="mock-site">
-                    <div className="mock-hero" />
-                    <div className="mock-line" />
-                    <div className="mock-line short" />
-                    <div className="mock-grid">
-                      <div className="mock-block" />
-                      <div className="mock-block" />
-                      <div className="mock-block" />
-                    </div>
-                  </div>
-                )}
-                <div
-                  className={`face-bubble bubble-${circlePosition}`}
-                  style={
-                    {
-                      '--bubble-size': BUBBLE_PREVIEW[circleSize],
-                      '--bubble-margin': '18px',
-                      '--circle-media-scale': circleCropScale,
-                      '--circle-media-x': `${50 + circleCropX / 2}%`,
-                      '--circle-media-y': `${50 + circleCropY / 2}%`,
-                    } as React.CSSProperties
-                  }
-                >
-                  {circlePreviewUrl && circleMode === 'image' ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      alt=""
-                      className="face-bubble-media"
-                      src={circlePreviewUrl}
-                    />
-                  ) : null}
-                  {circlePreviewUrl && circleMode === 'video' ? (
-                    <video
-                      aria-label="Circle source preview"
-                      autoPlay
-                      className="face-bubble-media"
-                      loop
-                      muted
-                      playsInline
-                      src={circlePreviewUrl}
-                    />
-                  ) : null}
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section className="run-column" aria-label="Batch run">
-          <div className="summary-strip">
-            <Metric label="Selected" value={String(leads.length)} />
-            <Metric label="Processed" value={`${summary.processed}/${leads.length}`} />
-            <Metric label="Active" value={String(summary.active)} />
-            <Metric label="Done" value={String(summary.done)} />
-            <Metric label="Failed" value={String(summary.failed)} />
-          </div>
-
-          <div className="panel">
-            <div className="panel-header">
-              <div className="panel-title">
-                <h2>Batch Progress</h2>
-                <span>{batchId ? batchId.slice(0, 8) : `${summary.totalProgress}%`}</span>
-              </div>
-              <div className="toolbar">
-                <a
-                  className={`button ${
-                    archiveUrl && !isRunning && summary.done > 0
-                      ? ''
-                      : 'disabled-link'
-                  }`}
-                  href={archiveUrl || '#'}
-                  aria-disabled={!archiveUrl || isRunning || summary.done === 0}
-                  tabIndex={
-                    archiveUrl && !isRunning && summary.done > 0 ? undefined : -1
-                  }
-                  onClick={(event) => {
-                    if (!archiveUrl || isRunning || summary.done === 0) {
-                      event.preventDefault();
-                    }
-                  }}
-                >
-                  <span className="icon" aria-hidden="true">
-                    ↓
-                  </span>
-                  MP4s
-                </a>
-                <a
-                  className={`button ${reportUrl && !isRunning ? '' : 'disabled-link'}`}
-                  href={reportUrl || '#'}
-                  aria-disabled={!reportUrl || isRunning}
-                  tabIndex={reportUrl && !isRunning ? undefined : -1}
-                  onClick={(event) => {
-                    if (!reportUrl || isRunning) event.preventDefault();
-                  }}
-                >
-                  <span className="icon" aria-hidden="true">
-                    #
-                  </span>
-                  Report
-                </a>
-              </div>
-            </div>
-            <div className="panel-body stack">
-              <div className="progress-track" aria-label="Overall progress">
-                <div
-                  className="progress-fill"
-                  style={{ width: `${summary.totalProgress}%` }}
-                />
-              </div>
-
-              {leads.length > 0 ? (
-                <div className="table-wrap">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Row</th>
-                        <th>Company</th>
-                        <th>Website</th>
-                        <th>Status</th>
-                        <th>Progress</th>
-                        <th>Output</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {leads.map((lead) => (
-                        <tr key={lead.id}>
-                          <td>{lead.rowIndex + 1}</td>
-                          <td>{lead.company}</td>
-                          <td className="url-cell">{lead.website}</td>
-                          <td>
-                            <span className={`status-pill status-${lead.status}`}>
-                              {lead.status}
-                            </span>
-                          </td>
-                          <td>
-                            <div className="progress-track">
-                              <div
-                                className="progress-fill"
-                                style={{ width: `${lead.progress}%` }}
-                              />
-                            </div>
-                          </td>
-                          <td>{lead.error || (lead.outputPath ? 'ready' : '-')}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div className="empty-state">
-                  <div>
-                    <strong>No leads</strong>
-                    <p>
-                      {csvDataset
-                        ? 'Choose the column that contains each lead website.'
-                        : 'Upload a CSV with lead websites.'}
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
+        </aside>
       </div>
     </div>
   );
@@ -1101,6 +1429,201 @@ function FileChip({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function StyledFileInput({
+  accept,
+  disabled = false,
+  id,
+  label,
+  onSelect,
+  placeholder,
+  value,
+}: {
+  accept: string;
+  disabled?: boolean;
+  id: string;
+  label: string;
+  onSelect: (file: File | undefined) => void;
+  placeholder: string;
+  value: string;
+}) {
+  return (
+    <label
+      className={`file-picker${disabled ? ' disabled' : ''}${value ? ' has-file' : ''}`}
+      htmlFor={id}
+    >
+      <input
+        accept={accept}
+        className="native-file-input"
+        disabled={disabled}
+        id={id}
+        type="file"
+        onChange={(event) => {
+          onSelect(event.target.files?.[0]);
+          event.currentTarget.value = '';
+        }}
+      />
+      <span className="file-picker-icon" aria-hidden="true">
+        ↑
+      </span>
+      <span className="file-picker-copy">
+        <strong>{label}</strong>
+        <span>{value || placeholder}</span>
+      </span>
+    </label>
+  );
+}
+
+function ConfigSummary({
+  audioFileName,
+  captureMode,
+  circleFileName,
+  circleHasAudio,
+  circleMode,
+  circlePosition,
+  circleSize,
+  durationSec,
+  filenameTemplate,
+  leadsCount,
+  resolution,
+}: {
+  audioFileName: string;
+  captureMode: CaptureMode;
+  circleFileName: string;
+  circleHasAudio: boolean;
+  circleMode: CircleSourceMode;
+  circlePosition: CirclePosition;
+  circleSize: CircleSize;
+  durationSec: number;
+  filenameTemplate: string;
+  leadsCount: number;
+  resolution: Resolution;
+}) {
+  return (
+    <div className="sidebar-section">
+      <div className="sidebar-heading">Configuration</div>
+      <div className="config-list">
+        <ConfigRow label="Inputs" value={`${leadsCount} lead${leadsCount === 1 ? '' : 's'}`} />
+        <ConfigRow label="Output" value={`${durationSec}s · ${resolution}`} />
+        <ConfigRow label="Filename" value={filenameTemplate} />
+        <ConfigRow label="Source" value={circleFileName || `required ${circleMode}`} />
+        <ConfigRow
+          label="Audio"
+          value={
+            circleMode === 'video' && circleHasAudio
+              ? 'circle audio'
+              : audioFileName || 'none'
+          }
+        />
+        <ConfigRow label="Mode" value={captureMode === 'recording' ? 'live capture' : 'static'} />
+        <ConfigRow label="Position" value={labelPosition(circlePosition).toLowerCase()} />
+        <ConfigRow label="Circle size" value={SIZE_LABELS[circleSize]} />
+      </div>
+    </div>
+  );
+}
+
+function ConfigRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="config-row">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function CircleCropPreview({
+  className,
+  mode,
+  previewUrl,
+  sizePx,
+  sourceAR,
+  cropScale,
+  cropX,
+  cropY,
+}: {
+  className?: string;
+  mode: CircleSourceMode;
+  previewUrl: string;
+  sizePx: number;
+  sourceAR: number;
+  cropScale: number;
+  cropX: number;
+  cropY: number;
+}) {
+  const mediaLayout = computeCircleMediaLayout({
+    bubblePx: sizePx,
+    sourceAR,
+    cropScale,
+    cropX,
+    cropY,
+  });
+  const mediaStyle: CSSProperties = {
+    position: 'absolute',
+    width: `${mediaLayout.width}px`,
+    height: `${mediaLayout.height}px`,
+    left: `${mediaLayout.left}px`,
+    top: `${mediaLayout.top}px`,
+  };
+
+  return (
+    <div
+      className={`circle-crop-preview${className ? ` ${className}` : ''}`}
+      style={{ '--crop-preview-size': `${sizePx}px` } as CSSProperties}
+    >
+      {previewUrl ? (
+        mode === 'image' ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            alt=""
+            className="face-bubble-media"
+            src={previewUrl}
+            style={mediaStyle}
+          />
+        ) : (
+          <video
+            aria-label="Circle source preview"
+            autoPlay
+            className="face-bubble-media"
+            loop
+            muted
+            playsInline
+            src={previewUrl}
+            style={mediaStyle}
+          />
+        )
+      ) : null}
+    </div>
+  );
+}
+
+// Base zoom keeps both axes overflowing the bubble once the user edits crop
+// position or scale. Matches CROP_BASE_ZOOM in filter-graph.ts, including the
+// renderer's default no-custom-crop path.
+const PREVIEW_BASE_ZOOM = 1.25;
+
+function computeCircleMediaLayout(opts: {
+  bubblePx: number;
+  sourceAR: number; // width / height of source
+  cropScale: number; // user-facing scale slider (≥1)
+  cropX: number; // -100..100; +100 = right side of source visible
+  cropY: number; // -100..100; +100 = bottom of source visible
+}): { width: number; height: number; left: number; top: number } {
+  const { bubblePx, sourceAR, cropScale, cropX, cropY } = opts;
+  const hasCustomCrop =
+    Math.abs(cropScale - 1) > 0.0001 || cropX !== 0 || cropY !== 0;
+  const effectiveScale =
+    Math.max(1, cropScale) * (hasCustomCrop ? PREVIEW_BASE_ZOOM : 1);
+  const shorterDim = bubblePx * effectiveScale;
+  const width = sourceAR >= 1 ? shorterDim * sourceAR : shorterDim;
+  const height = sourceAR >= 1 ? shorterDim : shorterDim / sourceAR;
+  const panMaxX = (width - bubblePx) / 2;
+  const panMaxY = (height - bubblePx) / 2;
+  // Positive X exposes the right side of the source — shift image left.
+  const left = (bubblePx - width) / 2 + (-cropX / 100) * panMaxX;
+  const top = (bubblePx - height) / 2 + (-cropY / 100) * panMaxY;
+  return { width, height, left, top };
 }
 
 function labelPosition(position: CirclePosition): string {
@@ -1202,6 +1725,17 @@ function normalizePreviewWebsite(value: string): string {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function readStoredColumnWidth(
+  key: string,
+  bounds: { min: number; max: number },
+): number | null {
+  const raw = window.localStorage.getItem(key);
+  if (!raw) return null;
+  const value = Number.parseFloat(raw);
+  if (!Number.isFinite(value)) return null;
+  return clampNumber(value, bounds.min, bounds.max);
 }
 
 function csvParseMessage({

@@ -3,15 +3,18 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { createDbClient, type DbClient } from '@/db/client';
 import { BatchOrchestrator, type OrchestratorPaths } from '@/orchestrator/orchestrator';
-import type {
-  BatchConfig,
-  BatchEvent,
-  BatchInput,
-  CaptureFn,
-  LeadInput,
-  RenderFn,
+import {
+  RESOLUTIONS,
+  type BatchConfig,
+  type BatchEvent,
+  type BatchInput,
+  type CaptureFn,
+  type LeadInput,
+  type RenderFn,
 } from '@/types';
 import { inferCircleHasAudio } from './circle-source';
+import { probeMediaDurationSec } from './media-probe';
+import { formatReportCsv } from './report';
 import { createPaths, ensureBatchDirs, type PathHelpers } from './storage';
 
 // High-level "run a batch end-to-end" facade. Designed for two consumers:
@@ -37,6 +40,9 @@ export interface RunBatchOptions {
   // Caller-supplied; the engine never invents IDs for callers that need
   // stable URLs (Phase 3 API routes).
   batchId?: string;
+  // User-facing label; persisted on the batch row, editable post-creation.
+  // Defaults to a date-stamped placeholder if omitted.
+  name?: string;
   leads: LeadInput[];
   config: BatchConfig;
   assets: BatchAssets;
@@ -79,18 +85,40 @@ export async function runBatch(opts: RunBatchOptions): Promise<RunningBatch> {
   const baseCapture = opts.capture ?? (await defaultCaptureFn());
   const baseRender = opts.render ?? (await defaultRenderFn());
 
+  const circleHasAudio = opts.assets.circleHasAudio ?? inferCircleHasAudio(opts.assets.circleSourcePath);
+
+  // Audio source rule (user-defined): if the circle is a video with audio,
+  // it provides both the audio AND the duration; any uploaded MP3 is
+  // ignored. Image/silent circles fall back to the MP3 for both. With no
+  // audio source at all, we keep the configured duration as a silent
+  // fallback. ffprobe failures (missing binary, unreadable file) also fall
+  // back rather than aborting the whole batch.
+  const effectiveAudioPath = circleHasAudio ? undefined : opts.assets.audioPath;
+  const audioSourcePath = circleHasAudio ? opts.assets.circleSourcePath : effectiveAudioPath;
+  const probedDuration = audioSourcePath ? await probeMediaDurationSec(audioSourcePath) : null;
+  const derivedDurationSec = probedDuration
+    ? clampDurationSec(probedDuration)
+    : opts.config.durationSec;
+  const config: BatchConfig =
+    derivedDurationSec === opts.config.durationSec
+      ? opts.config
+      : { ...opts.config, durationSec: derivedDurationSec };
+
   // For 'recording' mode the capture function records a WebM and the render
   // function tags every job with backgroundKind='video'. The orchestrator
   // doesn't need to know about modes at all — the engine handles routing
   // at the boundary.
   const captureFn =
     captureMode === 'recording'
-      ? createRecordingCapture(opts.config.durationSec, baseCapture)
+      ? createRecordingCapture(
+          config.durationSec,
+          config.resolution,
+          config.recordingScrollMode,
+          baseCapture,
+        )
       : baseCapture;
   const renderFn =
     captureMode === 'recording' ? wrapRenderWithVideoBackground(baseRender) : baseRender;
-
-  const circleHasAudio = opts.assets.circleHasAudio ?? inferCircleHasAudio(opts.assets.circleSourcePath);
 
   const orchestratorPaths: OrchestratorPaths = {
     screenshotFor: (b, leadId) => paths.tmp(b, leadId),
@@ -108,11 +136,12 @@ export async function runBatch(opts: RunBatchOptions): Promise<RunningBatch> {
 
   const batchInput: BatchInput = {
     id: batchId,
-    config: opts.config,
+    name: opts.name?.trim() || defaultBatchName(),
+    config,
     leads: opts.leads,
     circleSourcePath: opts.assets.circleSourcePath,
     circleHasAudio,
-    audioPath: opts.assets.audioPath,
+    audioPath: effectiveAudioPath,
   };
 
   // The proxy generator is the sole iterator over the orchestrator's stream.
@@ -160,31 +189,25 @@ async function finalize(
   };
 }
 
-// Final report — one row per lead. Columns chosen to be useful for "manually
-// retry these failed leads" workflows.
-function formatReportCsv(leads: ReturnType<DbClient['getLeads']>): string {
-  const header = ['row_index', 'website', 'status', 'output_path', 'capture_ms', 'render_ms', 'error'];
-  const lines = [header.join(',')];
-  for (const lead of leads) {
-    lines.push(
-      [
-        String(lead.rowIndex),
-        csvEscape(lead.website),
-        lead.status,
-        csvEscape(lead.outputPath ?? ''),
-        lead.captureMs?.toString() ?? '',
-        lead.renderMs?.toString() ?? '',
-        csvEscape(lead.error ?? ''),
-      ].join(','),
-    );
-  }
-  return lines.join('\n') + '\n';
+// Match the API's [1, 300] bound on durationSec, plus a 1-decimal round
+// (ffmpeg `-t` accepts decimals; this just keeps the value tidy in logs).
+function clampDurationSec(seconds: number): number {
+  const bounded = Math.max(1, Math.min(300, seconds));
+  return Math.round(bounded * 10) / 10;
 }
 
-function csvEscape(value: string): string {
-  if (value === '') return '';
-  if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
-  return value;
+// Used when the caller doesn't supply a `name`. The result is just a
+// placeholder — every API surface lets the user rename later — but it has
+// to be informative enough that a list of "Batch 2026-05-02" entries is
+// distinguishable at a glance.
+function defaultBatchName(): string {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  return `Batch ${yyyy}-${mm}-${dd} ${hh}:${mi}`;
 }
 
 interface Deferred<T> {
@@ -223,7 +246,16 @@ export async function shutdownEngine(): Promise<void> {
 // need to know the difference. The output path arrives as ".png" (the
 // orchestrator's screenshotFor convention) but we rewrite to .webm — the
 // downstream render step reads it as a video input.
-function createRecordingCapture(durationSec: number, fallbackCapture: CaptureFn): CaptureFn {
+function createRecordingCapture(
+  durationSec: number,
+  resolution: BatchConfig['resolution'],
+  scrollMode: BatchConfig['recordingScrollMode'],
+  fallbackCapture: CaptureFn,
+): CaptureFn {
+  // Match the recorder's viewport to the final output resolution so the
+  // downstream filter graph's scale-cover stage is a no-op instead of a
+  // bilinear upscale (which softens text on every recording).
+  const dims = RESOLUTIONS[resolution];
   return async (input) => {
     if (input.url === '') return fallbackCapture(input);
     const { recordWebsite } = await import('@/pipeline/record');
@@ -232,6 +264,9 @@ function createRecordingCapture(durationSec: number, fallbackCapture: CaptureFn)
       url: input.url,
       outputPath: webmPath,
       durationSec,
+      viewportWidth: dims.width,
+      viewportHeight: dims.height,
+      scrollMode,
     });
     return {
       pngPath: result.videoPath, // CaptureResult.pngPath is reused as a generic background-source path here
@@ -239,6 +274,7 @@ function createRecordingCapture(durationSec: number, fallbackCapture: CaptureFn)
       height: result.height,
       capturedAtMs: result.capturedAtMs,
       durationMs: result.durationMs,
+      videoStartOffsetSec: result.videoStartOffsetSec,
     };
   };
 }

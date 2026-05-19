@@ -123,4 +123,68 @@ describe('DbClient', () => {
     expect(db.getBatch('nope')).toBeNull();
     db.close();
   });
+
+  it('persists a batch name on insert and round-trips it via getBatch', () => {
+    const db = createDbClient({ filename: ':memory:' });
+    db.insertBatch({ ...makeBatch(), name: 'Q2 outreach — Acme' });
+    const read = db.getBatch('batch-1');
+    expect(read!.name).toBe('Q2 outreach — Acme');
+    db.close();
+  });
+
+  it('listBatches returns rows newest-first and includes name+status', () => {
+    let now = 1_000;
+    const db = createDbClient({ filename: ':memory:', clock: () => now });
+    db.insertBatch({ ...makeBatch(), id: 'old', name: 'first' });
+    now = 2_000;
+    db.insertBatch({ ...makeBatch(), id: 'new', name: 'second' });
+    const list = db.listBatches();
+    expect(list.map((b) => b.id)).toEqual(['new', 'old']);
+    expect(list[0]!.name).toBe('second');
+    db.close();
+  });
+
+  it('setBatchName updates the row and rejects empty/whitespace names', () => {
+    const db = createDbClient({ filename: ':memory:' });
+    db.insertBatch({ ...makeBatch(), name: 'old name' });
+    expect(db.setBatchName('batch-1', '   new name  ')).toBe(true);
+    expect(db.getBatch('batch-1')!.name).toBe('new name');
+    expect(db.setBatchName('batch-1', '   ')).toBe(false);
+    expect(db.getBatch('batch-1')!.name).toBe('new name');
+    expect(db.setBatchName('missing-id', 'x')).toBe(false);
+    db.close();
+  });
+
+  it('clearLeadOutput removes a rendered video from a lead and marks it failed', () => {
+    const db = createDbClient({ filename: ':memory:' });
+    db.insertBatch(makeBatch());
+    db.insertLeads([makeLeadRecord('batch-1', 0, 'lead-a')]);
+    db.updateLeadResult('lead-a', '/output/lead-a.mp4', 10, 20);
+
+    const updated = db.clearLeadOutput('batch-1', 'lead-a');
+
+    expect(updated).toMatchObject({
+      id: 'lead-a',
+      status: 'failed',
+      error: 'Video deleted',
+      outputPath: undefined,
+    });
+    expect(db.clearLeadOutput('batch-1', 'missing')).toBeNull();
+    db.close();
+  });
+
+  it('deleteBatch removes the batch and its leads', () => {
+    const db = createDbClient({ filename: ':memory:' });
+    db.insertBatch(makeBatch());
+    db.insertLeads([
+      makeLeadRecord('batch-1', 0, 'lead-a'),
+      makeLeadRecord('batch-1', 1, 'lead-b'),
+    ]);
+
+    expect(db.deleteBatch('batch-1')).toBe(true);
+    expect(db.getBatch('batch-1')).toBeNull();
+    expect(db.getLeads('batch-1')).toEqual([]);
+    expect(db.deleteBatch('batch-1')).toBe(false);
+    db.close();
+  });
 });

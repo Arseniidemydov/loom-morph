@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { runBatch, shutdownEngine } from '@/lib/engine';
@@ -120,6 +120,18 @@ describe('listBatches', () => {
   it('returns empty list when DB does not exist', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'snap-'));
     try {
+      expect(listBatches({ dataRoot: root })).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns empty list when the DB file exists but has no schema yet', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'snap-'));
+    try {
+      const dbPath = path.join(root, 'data', 'loom-morph.sqlite');
+      await mkdir(path.dirname(dbPath), { recursive: true });
+      await writeFile(dbPath, '');
       expect(listBatches({ dataRoot: root })).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });

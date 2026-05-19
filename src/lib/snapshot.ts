@@ -92,8 +92,11 @@ export function getBatchSnapshot(batchId: string, opts: SnapshotOptions = {}): B
 // route doesn't have to know SQLite.
 export interface BatchListItem {
   id: string;
+  name?: string;
   status: BatchRecord['status'];
   total: number;
+  done: number;
+  failed: number;
   createdAt: number;
   finishedAt?: number;
 }
@@ -104,7 +107,12 @@ export function listBatches(opts: SnapshotOptions = {}): BatchListItem[] {
   // We don't have a direct list-all method on DbClient (intentionally — the
   // orchestrator only writes/reads single batches). Use a short-lived read-only
   // connection for this query so callers do not need to manage another handle.
-  return rawListBatches(paths.db());
+  try {
+    return rawListBatches(paths.db());
+  } catch (err) {
+    if (isMissingHistorySchemaError(err)) return [];
+    throw err;
+  }
 }
 
 function rawListBatches(dbPath: string): BatchListItem[] {
@@ -112,19 +120,41 @@ function rawListBatches(dbPath: string): BatchListItem[] {
   try {
     const rows = db
       .prepare(
-        `SELECT id, status, total, created_at, finished_at
-         FROM batches
-         ORDER BY created_at DESC`,
+        // Aggregate per-status lead counts so the history UI shows
+        // "8 of 10 done" without a follow-up query per batch.
+        `SELECT b.id, b.name, b.status, b.total, b.created_at, b.finished_at,
+                SUM(CASE WHEN l.status = 'done'   THEN 1 ELSE 0 END) AS done_count,
+                SUM(CASE WHEN l.status = 'failed' THEN 1 ELSE 0 END) AS failed_count
+         FROM batches b
+         LEFT JOIN leads l ON l.batch_id = b.id
+         GROUP BY b.id
+         ORDER BY b.created_at DESC`,
       )
-      .all() as Array<{ id: string; status: BatchRecord['status']; total: number; created_at: number; finished_at: number | null }>;
+      .all() as Array<{
+        id: string;
+        name: string | null;
+        status: BatchRecord['status'];
+        total: number;
+        created_at: number;
+        finished_at: number | null;
+        done_count: number | null;
+        failed_count: number | null;
+      }>;
     return rows.map((r) => ({
       id: r.id,
+      name: r.name ?? undefined,
       status: r.status,
       total: r.total,
+      done: r.done_count ?? 0,
+      failed: r.failed_count ?? 0,
       createdAt: r.created_at,
       finishedAt: r.finished_at ?? undefined,
     }));
   } finally {
     db.close();
   }
+}
+
+function isMissingHistorySchemaError(err: unknown): boolean {
+  return err instanceof Error && /no such table: (batches|leads)/i.test(err.message);
 }

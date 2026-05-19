@@ -8,6 +8,7 @@ import {
 } from '@/lib/circle-source';
 import { MAX_BATCH_LEADS, parseLeadsCsv } from '@/lib/csv';
 import { runBatch } from '@/lib/engine';
+import { listBatches } from '@/lib/snapshot';
 import { registerRunningBatch } from '@/lib/batch-registry';
 import { createPaths, ensureBatchDirs } from '@/lib/storage';
 import type {
@@ -15,6 +16,7 @@ import type {
   CaptureMode,
   CirclePosition,
   CircleSize,
+  RecordingScrollMode,
   Resolution,
 } from '@/types';
 
@@ -26,6 +28,27 @@ const IMAGE_OR_VIDEO_EXTENSIONS: ReadonlySet<string> = new Set([
   ...IMAGE_CIRCLE_EXTENSIONS,
   ...VIDEO_CIRCLE_EXTENSIONS,
 ]);
+
+// History view feed — newest first, with per-batch lead aggregates so the
+// UI can show "8/10 done" without an extra round-trip per row.
+export function GET() {
+  const items = listBatches();
+  return NextResponse.json({
+    batches: items.map((b) => ({
+      batchId: b.id,
+      name: b.name,
+      status: b.status,
+      total: b.total,
+      done: b.done,
+      failed: b.failed,
+      createdAt: b.createdAt,
+      finishedAt: b.finishedAt,
+      reportUrl: `/api/batches/${b.id}/report`,
+      archiveUrl: `/api/batches/${b.id}/archive`,
+      eventsUrl: `/api/batches/${b.id}/events`,
+    })),
+  });
+}
 
 export async function POST(request: Request) {
   try {
@@ -71,19 +94,27 @@ export async function POST(request: Request) {
         form,
         'circlePosition',
         ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
-        'bottom-right',
+        'bottom-left',
       ),
       circleSize: enumField<CircleSize>(form, 'circleSize', ['S', 'M', 'L'], 'M'),
       circleMargin: clampNumber(numberField(form, 'circleMargin', 40), 0, 400),
       circleCropScale: clampNumber(numberField(form, 'circleCropScale', 1), 1, 2.5),
       circleCropX: clampNumber(numberField(form, 'circleCropX', 0), -100, 100),
       circleCropY: clampNumber(numberField(form, 'circleCropY', 0), -100, 100),
-      captureMode: enumField<CaptureMode>(form, 'captureMode', ['screenshot', 'recording'], 'screenshot'),
-      filenameTemplate: stringField(form, 'filenameTemplate') || '{company}.mp4',
+      captureMode: enumField<CaptureMode>(form, 'captureMode', ['screenshot', 'recording'], 'recording'),
+      recordingScrollMode: enumField<RecordingScrollMode>(
+        form,
+        'recordingScrollMode',
+        ['auto', 'pan', 'static'],
+        'auto',
+      ),
+      smoothMotion: booleanField(form, 'smoothMotion') ?? false,
+      filenameTemplate: stringField(form, 'filenameTemplate') || '{company} and vibeflow.mp4',
     };
 
     const running = await runBatch({
       batchId,
+      name: stringField(form, 'name') || undefined,
       config,
       leads: parsed.leads,
       assets: {

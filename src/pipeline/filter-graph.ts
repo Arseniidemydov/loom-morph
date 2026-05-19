@@ -50,13 +50,33 @@ export function buildFilterGraph(config: RenderConfig): FilterGraph {
 
   // The background stage differs by source kind:
   //   'image' (default) — looped still PNG; we apply a time-based crop
-  //     expression to pan over it (D-001 screenshot-pan strategy).
-  //   'video'           — Playwright recording of the live page; no pan
-  //     needed because the page already scrolls inside the recording.
-  //     Just scale-cover and center-crop to W×H (D-019).
+  //     expression to pan over it (D-001 screenshot-pan strategy). Forced
+  //     to 30 fps so the pan motion sample-rates evenly.
+  //   'video'           — Playwright recording of the live page. We
+  //     deliberately DO NOT add `fps=30` here: Playwright records at ~25
+  //     fps, and forcing 30 fps duplicates every 5th frame, which makes
+  //     any on-page hero video judder visibly. Passing through the
+  //     native rate and matching the output framerate downstream keeps
+  //     playback smooth.
+  // Optional motion-smoothing pass for video-bg: ffmpeg's minterpolate
+  // synthesizes frames between captured ones. `mi_mode=blend` is the
+  // cheap path — averages adjacent frames rather than running motion
+  // estimation — and adds maybe 30-50% to render time instead of the
+  // 5-10× hit of `mi_mode=mci`. Targeting 50fps doubles the perceived
+  // frame rate of Playwright's ~25fps capture, which is what makes
+  // hero videos read as "stitched screenshots" without this filter.
+  const smoothPass =
+    backgroundKind === 'video' && config.smoothMotion
+      ? `,minterpolate=fps=50:mi_mode=blend`
+      : '';
+
   const bgStage =
     backgroundKind === 'video'
-      ? `[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-${W})/2:(ih-${H})/2,setsar=1,fps=30[bg];`
+      ? // Lanczos is overkill for an exact-size no-op scale, but Playwright's
+        // supersampled capture (renderViewport > recordVideo.size) means the
+        // bg WebM almost always arrives at a different resolution than the
+        // target — lanczos keeps text and UI edges crisp.
+        `[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}:(iw-${W})/2:(ih-${H})/2,setsar=1${smoothPass}[bg];`
       : `[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-${W})/2:${buildHumanScrollExpression(SH, H, D)},setsar=1,fps=30[bg];`;
 
   const lines = [
@@ -77,6 +97,13 @@ export function buildFilterGraph(config: RenderConfig): FilterGraph {
   };
 }
 
+// Headroom applied when the user actively edits crop position or scale, so
+// the X AND Y sliders always have pixels to pan over — without it, sources
+// whose aspect ratio matches the crop on one axis leave that axis with
+// zero room and the slider does nothing. Mirrors PREVIEW_BASE_ZOOM in
+// batch-workbench.tsx so the preview and the rendered output stay in sync.
+const CROP_BASE_ZOOM = 1.25;
+
 function circleCropFilter(size: number, config: RenderConfig): string {
   const scale = clampNumber(config.circleCropScale ?? 1, 1, 2.5);
   const x = clampNumber(config.circleCropX ?? 0, -100, 100);
@@ -85,7 +112,7 @@ function circleCropFilter(size: number, config: RenderConfig): string {
     return `scale=${size}:${size}:force_original_aspect_ratio=increase,crop=${size}:${size}`;
   }
 
-  const scaled = Math.round(size * scale);
+  const scaled = Math.round(size * scale * CROP_BASE_ZOOM);
   return [
     `scale=${scaled}:${scaled}:force_original_aspect_ratio=increase`,
     `crop=${size}:${size}:${cropOffsetExpr('iw', size, x)}:${cropOffsetExpr('ih', size, y)}`,
@@ -101,6 +128,11 @@ function cropOffsetExpr(axis: 'iw' | 'ih', size: number, offset: number): string
 function clampNumber(value: number, lo: number, hi: number): number {
   if (!Number.isFinite(value)) return lo;
   return Math.max(lo, Math.min(hi, value));
+}
+
+function formatSeconds(seconds: number): string {
+  // Plain decimal seconds — ffmpeg accepts any positive number, e.g. "3.4".
+  return (Math.round(seconds * 1000) / 1000).toString();
 }
 
 function buildHumanScrollExpression(
@@ -204,6 +236,7 @@ export function buildFfmpegArgs(job: RenderJob, opts: BuildOptions = {}): string
     circleHasAudio: job.circleHasAudio,
     audioMp3Present,
     backgroundKind: job.backgroundKind,
+    smoothMotion: job.config.smoothMotion,
   };
   const graph = buildFilterGraph(renderConfig);
   const backgroundKind = job.backgroundKind ?? 'image';
@@ -212,9 +245,15 @@ export function buildFfmpegArgs(job: RenderJob, opts: BuildOptions = {}): string
   // seconds at 30 fps so the time-based crop expression has frames to
   // drive. For 'video' the input is a real recording — no loop, ffmpeg
   // reads frames as-they-come; output is capped to D via the trailing -t.
+  // An optional `-ss <offset>` BEFORE `-i` is input-seek (fast, keyframe-
+  // snapped) and skips the navigation + settle prefix from a recording so
+  // the user never sees a blank/loading page in the final output.
+  const startOffset = job.backgroundStartOffsetSec ?? 0;
+  const seekArgs =
+    backgroundKind === 'video' && startOffset > 0 ? ['-ss', formatSeconds(startOffset)] : [];
   const bgInputArgs =
     backgroundKind === 'video'
-      ? ['-i', job.screenshotPath]
+      ? [...seekArgs, '-i', job.screenshotPath]
       : ['-loop', '1', '-framerate', '30', '-t', String(D), '-i', job.screenshotPath];
 
   const args: string[] = [
@@ -251,12 +290,18 @@ export function buildFfmpegArgs(job: RenderJob, opts: BuildOptions = {}): string
   if (graph.audioMap) {
     args.push('-c:a', 'aac', '-b:a', '192k');
   }
-  args.push(
-    '-movflags', '+faststart',
-    '-r', '30',
-    '-t', String(D),
-    job.outputPath,
-  );
+  args.push('-movflags', '+faststart');
+  if (backgroundKind === 'video') {
+    // Preserve the bg recording's native timestamps end-to-end. Forcing
+    // `-r 30` here would re-duplicate the very frames the filter-graph
+    // change was meant to avoid, putting the judder right back. The
+    // image-bg path is still locked to 30 fps so a still-pan output is
+    // perfectly smooth.
+    args.push('-fps_mode', 'passthrough');
+  } else {
+    args.push('-r', '30');
+  }
+  args.push('-t', String(D), job.outputPath);
 
   return args;
 }

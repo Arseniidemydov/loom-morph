@@ -101,7 +101,7 @@ function parseCli(argv: string[]): CliArgs {
     circlePosition,
     circleSize,
     circleMargin,
-    filenameTemplate: values['filename-template'] ?? '{company}.mp4',
+    filenameTemplate: values['filename-template'] ?? '{company} and vibeflow.mp4',
     circleHasAudio: values['circle-has-audio'],
     rows: values.rows ? parseRowSpec(values.rows) : undefined,
   };
@@ -136,7 +136,7 @@ Required:
 Options:
   --audio <path>                 background MP3 narration
   --website-column <name>        explicit CSV column to use as the website
-  --filename-template <template> output filename template (default: {company}.mp4)
+  --filename-template <template> output filename template (default: "{company} and vibeflow.mp4")
   --batch-id <id>                stable batch id (default: random UUID)
   --data-root <dir>              storage root (default: current directory)
   --max-leads <n>                cap rows processed (hard max/default: 3)

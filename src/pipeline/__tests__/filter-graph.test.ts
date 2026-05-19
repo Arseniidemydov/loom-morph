@@ -17,7 +17,7 @@ describe('buildFilterGraph', () => {
   it('30s 1080p bottom-right, no audio (silent) — pre-scales then crops, pan in (ih-H) space', () => {
     const g = buildFilterGraph(base);
     expect(g.filterComplex).toMatchInlineSnapshot(
-      `"[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080:(iw-1920)/2:if(lt(t\\\,2.1)\\\,0\\\,if(lt(t\\\,8.1)\\\,0+((ih-1080)*0.2296)*((t-2.1)/6)*((t-2.1)/6)*(3-2*((t-2.1)/6))\\\,if(lt(t\\\,13.3)\\\,(ih-1080)*0.2296\\\,if(lt(t\\\,23.2)\\\,(ih-1080)*0.2296+((ih-1080)*0.1571)*((t-13.3)/9.9)*((t-13.3)/9.9)*(3-2*((t-13.3)/9.9))\\\,if(lt(t\\\,29.4)\\\,(ih-1080)*0.3867\\\,if(lt(t\\\,30)\\\,(ih-1080)*0.3867+((ih-1080)*0.0898)*((t-29.4)/0.6)*((t-29.4)/0.6)*(3-2*((t-29.4)/0.6))\\\,(ih-1080)*0.4765)))))),setsar=1,fps=30[bg];[1:v]scale=280:280:force_original_aspect_ratio=increase,crop=280:280[c_raw];[c_raw][2:v]alphamerge[circle];[bg][circle]overlay=1600:760:shortest=0[v]"`,
+      `"[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080:(iw-1920)/2:if(lt(t\\,2.1)\\,0\\,if(lt(t\\,6.6)\\,0+((ih-1080)*0.2933)*((t-2.1)/4.5)*((t-2.1)/4.5)*(3-2*((t-2.1)/4.5))\\,if(lt(t\\,10.5)\\,(ih-1080)*0.2933\\,if(lt(t\\,15.5)\\,(ih-1080)*0.2933+((ih-1080)*0.2583)*((t-10.5)/5)*((t-10.5)/5)*(3-2*((t-10.5)/5))\\,if(lt(t\\,18.6)\\,(ih-1080)*0.5516\\,if(lt(t\\,23.3)\\,(ih-1080)*0.5516+((ih-1080)*0.1978)*((t-18.6)/4.7)*((t-18.6)/4.7)*(3-2*((t-18.6)/4.7))\\,if(lt(t\\,24.7)\\,(ih-1080)*0.7494\\,if(lt(t\\,25.6)\\,(ih-1080)*0.7494+((ih-1080)*-0.1384)*((t-24.7)/0.9)*((t-24.7)/0.9)*(3-2*((t-24.7)/0.9))\\,if(lt(t\\,27.8)\\,(ih-1080)*0.611\\,if(lt(t\\,30)\\,(ih-1080)*0.611+((ih-1080)*0.2008)*((t-27.8)/2.2)*((t-27.8)/2.2)*(3-2*((t-27.8)/2.2))\\,(ih-1080)*0.8118)))))))))),setsar=1,fps=30[bg];[1:v]scale=280:280:force_original_aspect_ratio=increase,crop=280:280[c_raw];[c_raw][2:v]alphamerge[circle];[bg][circle]overlay=1600:760:shortest=0[v]"`,
     );
     expect(g.videoMap).toBe('[v]');
     expect(g.audioMap).toBeUndefined();
@@ -34,7 +34,7 @@ describe('buildFilterGraph', () => {
       audioMp3Present: true,
     });
     expect(g.filterComplex).toMatchInlineSnapshot(
-      `"[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720:(iw-1280)/2:if(lt(t\\\,1.8)\\\,0\\\,if(lt(t\\\,22.2)\\\,0+((ih-720)*0.3952)*((t-1.8)/20.4)*((t-1.8)/20.4)*(3-2*((t-1.8)/20.4))\\\,if(lt(t\\\,38)\\\,(ih-720)*0.3952\\\,if(lt(t\\\,60)\\\,(ih-720)*0.3952+((ih-720)*0.1042)*((t-38)/22)*((t-38)/22)*(3-2*((t-38)/22))\\\,(ih-720)*0.4994)))),setsar=1,fps=30[bg];[1:v]scale=200:200:force_original_aspect_ratio=increase,crop=200:200[c_raw];[c_raw][2:v]alphamerge[circle];[bg][circle]overlay=40:40:shortest=0[v];[1:a][3:a]amix=inputs=2:duration=first:dropout_transition=0[a]"`,
+      `"[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720:(iw-1280)/2:if(lt(t\\,1.8)\\,0\\,if(lt(t\\,10)\\,0+((ih-720)*0.2622)*((t-1.8)/8.2)*((t-1.8)/8.2)*(3-2*((t-1.8)/8.2))\\,if(lt(t\\,16.3)\\,(ih-720)*0.2622\\,if(lt(t\\,23)\\,(ih-720)*0.2622+((ih-720)*0.1629)*((t-16.3)/6.7)*((t-16.3)/6.7)*(3-2*((t-16.3)/6.7))\\,if(lt(t\\,29.9)\\,(ih-720)*0.4251\\,if(lt(t\\,35.1)\\,(ih-720)*0.4251+((ih-720)*0.2555)*((t-29.9)/5.2)*((t-29.9)/5.2)*(3-2*((t-29.9)/5.2))\\,if(lt(t\\,37.4)\\,(ih-720)*0.6806\\,if(lt(t\\,38.1)\\,(ih-720)*0.6806+((ih-720)*-0.1138)*((t-37.4)/0.7)*((t-37.4)/0.7)*(3-2*((t-37.4)/0.7))\\,if(lt(t\\,42.3)\\,(ih-720)*0.5668\\,if(lt(t\\,51)\\,(ih-720)*0.5668+((ih-720)*0.2613)*((t-42.3)/8.7)*((t-42.3)/8.7)*(3-2*((t-42.3)/8.7))\\,if(lt(t\\,56.2)\\,(ih-720)*0.8281\\,if(lt(t\\,60)\\,(ih-720)*0.8281+(0)*((t-56.2)/3.8)*((t-56.2)/3.8)*(3-2*((t-56.2)/3.8))\\,(ih-720)*0.8281)))))))))))),setsar=1,fps=30[bg];[1:v]scale=200:200:force_original_aspect_ratio=increase,crop=200:200[c_raw];[c_raw][2:v]alphamerge[circle];[bg][circle]overlay=40:40:shortest=0[v];[1:a][3:a]amix=inputs=2:duration=first:dropout_transition=0[a]"`,
     );
     expect(g.audioMap).toBe('[a]');
   });
@@ -74,8 +74,9 @@ describe('buildFilterGraph', () => {
       circleCropX: 40,
       circleCropY: -20,
     });
+    // 280 × scale 1.5 × CROP_BASE_ZOOM 1.25 = 525.
     expect(g.filterComplex).toContain(
-      '[1:v]scale=420:420:force_original_aspect_ratio=increase,crop=280:280:(iw-280)*0.7:(ih-280)*0.4[c_raw]',
+      '[1:v]scale=525:525:force_original_aspect_ratio=increase,crop=280:280:(iw-280)*0.7:(ih-280)*0.4[c_raw]',
     );
   });
 
@@ -127,8 +128,12 @@ describe('buildFilterGraph', () => {
   it('backgroundKind=video emits a center-crop background stage with no pan expression', () => {
     const g = buildFilterGraph({ ...base, backgroundKind: 'video' });
     // Center crop both axes — no time-based panY.
+    // No `fps=30` for video-bg path — preserves the source recording's
+    // native timestamps so an on-page hero video doesn't judder from
+    // frame duplication. Lanczos filtering keeps the downscale from
+    // supersampled captures crisp.
     expect(g.filterComplex).toContain(
-      '[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080:(iw-1920)/2:(ih-1080)/2,setsar=1,fps=30[bg]',
+      '[0:v]scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos,crop=1920:1080:(iw-1920)/2:(ih-1080)/2,setsar=1[bg]',
     );
     // No `if(lt(t\,…)` segment cascade in the background stage.
     const bgPart = g.filterComplex.split(';')[0]!;
@@ -169,6 +174,54 @@ describe('buildFilterGraph', () => {
     expect(maskPathIdx).toBeGreaterThan(0);
     expect(args[maskPathIdx - 1]).toBe('-i');
     expect(args.slice(maskPathIdx - 7, maskPathIdx - 1)).toEqual(['-loop', '1', '-framerate', '30', '-t', '5']);
+  });
+
+  it('buildFfmpegArgs adds `-ss <offset>` before the video input when backgroundStartOffsetSec is set', () => {
+    const job: RenderJob = {
+      screenshotPath: '/tmp/recording.webm',
+      screenshotHeight: 800,
+      circleSourcePath: '/tmp/circle.png',
+      circleHasAudio: false,
+      outputPath: '/output/out.mp4',
+      backgroundKind: 'video',
+      backgroundStartOffsetSec: 3.4,
+      config: {
+        durationSec: 5,
+        resolution: '720p',
+        circlePosition: 'bottom-right',
+        circleSize: 'M',
+        circleMargin: 20,
+        filenameTemplate: '',
+      },
+    };
+    const args = buildFfmpegArgs(job, { maskDir: '/masks' });
+    const firstI = args.indexOf('-i');
+    expect(args[firstI + 1]).toBe('/tmp/recording.webm');
+    // ['-y', '-ss', '3.4', '-i', ...] — the seek arg must precede `-i`.
+    expect(args.slice(0, firstI)).toEqual(['-y', '-ss', '3.4']);
+  });
+
+  it('buildFfmpegArgs ignores backgroundStartOffsetSec=0 (no seek args)', () => {
+    const job: RenderJob = {
+      screenshotPath: '/tmp/recording.webm',
+      screenshotHeight: 800,
+      circleSourcePath: '/tmp/circle.png',
+      circleHasAudio: false,
+      outputPath: '/output/out.mp4',
+      backgroundKind: 'video',
+      backgroundStartOffsetSec: 0,
+      config: {
+        durationSec: 5,
+        resolution: '720p',
+        circlePosition: 'bottom-right',
+        circleSize: 'M',
+        circleMargin: 20,
+        filenameTemplate: '',
+      },
+    };
+    const args = buildFfmpegArgs(job, { maskDir: '/masks' });
+    const firstI = args.indexOf('-i');
+    expect(args.slice(0, firstI)).toEqual(['-y']);
   });
 
   it('30s 1080p tall page keeps the same segment timeline regardless of width', () => {

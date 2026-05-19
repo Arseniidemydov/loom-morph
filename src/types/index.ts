@@ -35,6 +35,20 @@ export const CIRCLE_PIXELS: Record<CircleSize, number> = {
 
 export type CaptureMode = 'screenshot' | 'recording'; // D-019
 
+// Recording-mode scroll behavior:
+//   'auto'   — probe the page; pan if scrolling works, hold static if the
+//              page is scroll-locked / scroll-jacked / fits in viewport.
+//              Default.
+//   'pan'    — driveScroll pans the page over the duration, regardless of
+//              whether the page actually responds to scroll.
+//   'static' — hold the page at scrollY=0 for the duration. Useful for
+//              sites with scroll-pinned hero animations where the page
+//              expands content beyond viewport during scroll (e.g.
+//              jvm.ch, ogilvy.ch) — we can't auto-detect that case
+//              (scroll moves, just produces a weird timeline), so user
+//              still has to pick this explicitly.
+export type RecordingScrollMode = 'auto' | 'pan' | 'static';
+
 export interface BatchConfig {
   durationSec: number; // default 30
   resolution: Resolution; // default '1080p'
@@ -48,6 +62,13 @@ export interface BatchConfig {
   // 'recording' (records the live page; preserves hero videos / parallax /
   // animations at the cost of real-time-bound capture).
   captureMode?: CaptureMode;
+  // Recording-mode only. Default 'pan'.
+  recordingScrollMode?: RecordingScrollMode;
+  // Recording-mode only. When true, the render filter graph applies
+  // motion-interpolation (ffmpeg `minterpolate=mi_mode=blend`) to the
+  // captured WebM so the on-page hero video reads as smoother motion
+  // instead of "stitched screenshots". Costs ~50% extra render time.
+  smoothMotion?: boolean;
   filenameTemplate: string; // e.g. "{company}.mp4", fallback "lead-{i}.mp4"
 }
 
@@ -65,6 +86,11 @@ export interface CaptureResult {
   height: number; // px (capped at 16000)
   capturedAtMs: number; // Date.now()
   durationMs: number;
+  // Recording-mode only: seconds of leading footage that should be skipped
+  // by the renderer (navigation + cookie-accept + settle). Undefined or 0
+  // means "use the whole video from t=0" — the screenshot path always
+  // leaves this unset.
+  videoStartOffsetSec?: number;
 }
 
 export type CaptureFailureReason =
@@ -104,6 +130,10 @@ export interface RenderJob {
   // the live page; the filter graph centers + scales without a time-based
   // pan. Default 'image'.
   backgroundKind?: BackgroundKind;
+  // Recording-mode only: seconds to skip at the start of the background
+  // video (via ffmpeg `-ss`). Useful for hiding page load + cookie-accept
+  // settle from the final output.
+  backgroundStartOffsetSec?: number;
 }
 
 export interface RenderConfig {
@@ -120,6 +150,9 @@ export interface RenderConfig {
   circleHasAudio: boolean;
   audioMp3Present: boolean; // D-015 — separate flag so the four audio paths are decidable
   backgroundKind?: BackgroundKind; // D-019; default 'image'
+  // Mirrors BatchConfig.smoothMotion — passed through so the filter
+  // builder can append motion-interpolation when video-bg.
+  smoothMotion?: boolean;
 }
 
 export interface RenderResult {
@@ -173,6 +206,7 @@ export interface LeadRecord extends LeadInput {
 
 export interface BatchInput {
   id: string;
+  name?: string; // user-facing label; defaults set by the engine if omitted
   config: BatchConfig;
   leads: LeadInput[];
   circleSourcePath: string;
@@ -193,6 +227,7 @@ export type BatchEvent =
 // Persisted batch row (referenced by DbClient.getBatch in INTERFACES.md).
 export interface BatchRecord {
   id: string;
+  name?: string;
   status: 'pending' | 'running' | 'done' | 'failed';
   config: BatchConfig;
   total: number;
