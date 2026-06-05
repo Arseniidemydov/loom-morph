@@ -79,6 +79,8 @@ matters to you.
 | `LOOM_RENDER_CONCURRENCY`  | 6               | Concurrent ffmpeg encodes |
 | `LOOM_CONTAINER`           | 1 (set in image)| Enables container Chrome flags (`--no-sandbox`, `--disable-dev-shm-usage`) |
 | `LOOM_DATA_ROOT`           | (unset)         | Relocate ALL state (SQLite, uploads, tmp, output) under one dir. Set this to a single mounted disk on hosts that allow only one volume (e.g. Render). |
+| `BASIC_AUTH_USER`          | (unset)         | Username for HTTP Basic Auth. Auth is OFF unless both this and the password are set. |
+| `BASIC_AUTH_PASSWORD`      | (unset)         | Password for HTTP Basic Auth. Set both on any public deploy. |
 | `PORT`                     | 3000            | HTTP port |
 
 Leaving the concurrency vars unset falls back to laptop-safe defaults
@@ -99,6 +101,8 @@ point all state there with `LOOM_DATA_ROOT` (not the two separate `/app/data`
 4. Set environment variables:
    - `LOOM_DATA_ROOT=/data`
    - `LOOM_CAPTURE_CONCURRENCY` / `LOOM_RENDER_CONCURRENCY` sized to the plan
+   - `BASIC_AUTH_USER` + `BASIC_AUTH_PASSWORD` — set these so the public URL
+     isn't open to the internet (the app prompts for them on first load)
    - (`LOOM_CONTAINER=1` is already baked into the image)
 5. Deploy. Your batches, DB, and rendered videos now all live on the disk and
    survive redeploys.

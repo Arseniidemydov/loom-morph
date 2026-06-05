@@ -1133,7 +1133,7 @@ export function BatchWorkbench() {
                   onChange={(event) => setBatchName(event.target.value)}
                 />
                 <span className="field-hint">
-                  Leave blank to auto-name from today's date. You can rename later from the history list.
+                  Leave blank to auto-name from today&apos;s date. You can rename later from the history list.
                 </span>
               </div>
               <div className="field">
