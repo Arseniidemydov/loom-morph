@@ -235,7 +235,14 @@ async function ensureBrowser(poolSize: number): Promise<BrowserState> {
       chromium.use(StealthPlugin());
       stealthApplied = true;
     }
-    const browser = (await playwrightExtra.chromium.launch({ headless: true })) as Browser;
+    // Container-only hardening (LOOM_CONTAINER=1): headless Chrome in a Linux
+    // container needs --no-sandbox and --disable-dev-shm-usage. No-op on macOS.
+    const launchArgs =
+      process.env.LOOM_CONTAINER === '1' ? ['--no-sandbox', '--disable-dev-shm-usage'] : [];
+    const browser = (await playwrightExtra.chromium.launch({
+      headless: true,
+      args: launchArgs,
+    })) as Browser;
 
     const slots: ContextSlot[] = [];
     for (let i = 0; i < poolSize; i++) {

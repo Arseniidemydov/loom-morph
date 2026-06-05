@@ -1,0 +1,19 @@
+# Keep the build context small and avoid shipping host state into the image.
+node_modules
+.next
+.git
+.gitignore
+
+# Local runtime state — must NOT be baked into the image (mount volumes instead).
+data
+output
+uploads
+tmp
+
+# Dev / docs / scratch
+*.md
+!README.md
+scripts/.dist
+.DS_Store
+*.log
+.env*

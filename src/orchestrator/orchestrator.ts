@@ -1,19 +1,16 @@
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import {
-  CaptureError,
-  RenderError,
   type BatchEvent,
   type BatchInput,
   type CaptureFn,
-  type CaptureResult,
   type LeadInput,
   type LeadRecord,
   type RenderFn,
-  type RenderJob,
 } from '@/types';
 import type { DbClient } from '@/db/client';
-import { resolveCompanyName, resolveFirstName } from '@/lib/lead-fields';
+import { renderFilename } from '@/lib/render-filename';
+import { processLead as runLeadPipeline } from '@/worker/process-lead';
 import { createEventChannel } from './events';
 import { createPool, type Pool } from './pool';
 
@@ -128,75 +125,42 @@ export class BatchOrchestrator {
     lead: LeadRecord,
     channel: ReturnType<typeof createEventChannel<BatchEvent>>,
   ): Promise<boolean> {
-    // Capture stage
-    this.transition(lead, 'capturing', channel);
-    let captureResult: CaptureResult;
-    const captureStart = this.clock();
-    try {
-      captureResult = await this.capturePool.run(() =>
-        this.captureWithRetries(batch, lead),
-      );
-    } catch (err) {
-      const reason = formatErrorReason(err);
-      this.fail(lead, reason, channel);
-      return false;
-    }
-    const captureMs = this.clock() - captureStart;
-
-    // Render stage
-    this.transition(lead, 'rendering', channel);
-    const filename = renderFilename(batch, lead);
+    const filename = renderFilename(batch.config.filenameTemplate || '', lead);
     const outputPath = this.paths.outputFor(batch.id, lead.id, lead, filename);
-    const renderStart = this.clock();
-    try {
-      const renderJob: RenderJob = {
-        screenshotPath: captureResult.pngPath,
-        screenshotHeight: captureResult.height,
+
+    const result = await runLeadPipeline(
+      {
+        url: lead.website,
+        screenshotPath: this.paths.screenshotFor(batch.id, lead.id),
+        outputPath,
         circleSourcePath: batch.circleSourcePath,
         circleHasAudio: batch.circleHasAudio,
         audioPath: batch.audioPath,
-        outputPath,
         config: batch.config,
-        backgroundStartOffsetSec: captureResult.videoStartOffsetSec,
-      };
-      // ffmpeg sometimes exits with EINVAL (visible as code 234) under
-      // peak concurrent load — fd exhaustion or transient libx264 buffer
-      // allocation failures that aren't deterministic from the input.
-      // One render retry catches these cleanly; persistent failures
-      // (bad input, missing codec) fail through on the second attempt.
-      try {
-        await this.renderPool.run(() => this.render(renderJob));
-      } catch (firstErr) {
-        if (!isLikelyTransientRenderError(firstErr)) throw firstErr;
-        await this.renderPool.run(() => this.render(renderJob));
-      }
-    } catch (err) {
-      const reason = formatErrorReason(err);
-      this.fail(lead, reason, channel);
+      },
+      {
+        capture: this.capture,
+        render: this.render,
+        runCapture: (fn) => this.capturePool.run(fn),
+        runRender: (fn) => this.renderPool.run(fn),
+        clock: this.clock,
+        captureRetries: this.captureRetries,
+      },
+      {
+        onCapturing: () => this.transition(lead, 'capturing', channel),
+        onRendering: () => this.transition(lead, 'rendering', channel),
+      },
+    );
+
+    if (!result.ok) {
+      this.fail(lead, result.error, channel);
       return false;
     }
-    const renderMs = this.clock() - renderStart;
 
-    this.db.updateLeadResult(lead.id, outputPath, captureMs, renderMs);
+    this.db.updateLeadResult(lead.id, result.outputPath, result.captureMs, result.renderMs);
     channel.emit({ type: 'lead-status', leadId: lead.id, status: 'done' });
-    channel.emit({ type: 'lead-completed', leadId: lead.id, outputPath });
+    channel.emit({ type: 'lead-completed', leadId: lead.id, outputPath: result.outputPath });
     return true;
-  }
-
-  private async captureWithRetries(batch: BatchInput, lead: LeadRecord): Promise<CaptureResult> {
-    const outputPath = this.paths.screenshotFor(batch.id, lead.id);
-    let attempt = 0;
-    // Total attempts = 1 + this.captureRetries (one initial try, plus N retries).
-    // Retries only happen on transient reasons; bot-blocked / invalid-url short-circuit.
-    while (true) {
-      try {
-        return await this.capture({ url: lead.website, outputPath });
-      } catch (err) {
-        const isRetryable = err instanceof CaptureError && (err.reason === 'timeout' || err.reason === 'network');
-        if (!isRetryable || attempt >= this.captureRetries) throw err;
-        attempt += 1;
-      }
-    }
   }
 
   private transition(
@@ -221,77 +185,3 @@ export class BatchOrchestrator {
   }
 }
 
-// Render filename from BatchConfig.filenameTemplate, falling back to lead-{i}.
-// Tokens are CSV column keys; if any required token is missing in csvData,
-// fall back rather than emit a literal "{key}" filename.
-//
-// The `{company}` token is special: it resolves through resolveCompanyName,
-// which is case-insensitive and matches common aliases (Company, Account,
-// Organization, "Company Name", …). Without that, `{company}.mp4` only
-// works on CSVs whose header is literally "company" — which almost no
-// real sales CSV uses — and every file silently becomes `lead-1.mp4`.
-function renderFilename(batch: BatchInput, lead: LeadRecord): string {
-  const template = batch.config.filenameTemplate || '';
-  const fallback = `lead-${lead.rowIndex + 1}.mp4`;
-  if (!template) return fallback;
-  let resolved = template;
-  let missing = false;
-  // `[^}]+` (vs `\w+`) so tokens can include spaces — real-world CSV headers
-  // like "Company Name" need this.
-  resolved = resolved.replace(/\{([^}]+)\}/g, (_match, raw: string) => {
-    const key = raw.trim();
-    if (key === 'i') return String(lead.rowIndex + 1);
-    // Special tokens with smart resolution:
-    //   {company}   — company aliases first; falls back to first-name
-    //                 aliases. This is the most-used token and the
-    //                 fallback chain matches the user's default-template
-    //                 intent ("{company} and vibeflow.mp4" should still
-    //                 produce a usable name when there's no company).
-    //   {firstName} — strictly first-name aliases, no company fallback.
-    //                 Lets power users write a template that fails open
-    //                 when the CSV has no name columns.
-    const lower = key.toLowerCase();
-    let value: string | undefined;
-    if (lower === 'company') {
-      value = resolveCompanyName(lead.csvData) ?? resolveFirstName(lead.csvData);
-    } else if (lower === 'firstname' || lower === 'first') {
-      value = resolveFirstName(lead.csvData);
-    } else {
-      value = lead.csvData[key];
-    }
-    if (value === undefined || value === '') {
-      missing = true;
-      return '';
-    }
-    return safeFilenameSegment(value);
-  });
-  if (missing) return fallback;
-  // Ensure an .mp4 extension.
-  if (!/\.mp4$/i.test(resolved)) resolved += '.mp4';
-  return resolved;
-}
-
-function safeFilenameSegment(s: string): string {
-  // Strip path separators and characters that misbehave on common filesystems.
-  return s.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim() || 'unnamed';
-}
-
-function isLikelyTransientRenderError(err: unknown): boolean {
-  // The two failure modes we see at peak concurrency:
-  //   - ffmpeg exits with code 234 (= unsigned wrap of -22 / EINVAL),
-  //     usually fd exhaustion or libx264 buffer alloc.
-  //   - timeout (the orchestrator-side kill).
-  // Codec / missing-input style failures will repeat on retry; those
-  // we leave to surface as real errors.
-  if (err instanceof RenderError) {
-    if (err.reason === 'timeout') return true;
-    if (err.reason === 'ffmpeg-error' && /code\s+(234|1)\b/.test(err.message)) return true;
-  }
-  return false;
-}
-
-function formatErrorReason(err: unknown): string {
-  if (err instanceof CaptureError) return `capture:${err.reason}: ${err.message}`;
-  if (err instanceof Error) return err.message;
-  return String(err);
-}

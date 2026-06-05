@@ -74,6 +74,22 @@ export interface BatchSummary {
 let sharedDb: DbClient | null = null;
 let sharedDbPath: string | null = null;
 
+// Concurrency knobs, resolved from the environment when the caller doesn't
+// pass an explicit value. Defaults (applied in the orchestrator) are
+// laptop-safe: capture 5, render min(cpus-1, 5). On a multi-core VM, raise
+// these to run more captures/encodes in parallel — recording mode parallelizes
+// across browser contexts (each recordWebsite call gets its own recordVideo
+// context), so wall-clock scales with concurrency until CPU/RAM saturate.
+//   LOOM_CAPTURE_CONCURRENCY — concurrent page captures/recordings
+//   LOOM_RENDER_CONCURRENCY  — concurrent ffmpeg encodes
+// Invalid / non-positive values are ignored (fall back to the default).
+function envConcurrency(name: string): number | undefined {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
 export async function runBatch(opts: RunBatchOptions): Promise<RunningBatch> {
   const batchId = opts.batchId ?? randomUUID();
   const paths = createPaths({ root: opts.dataRoot });
@@ -130,8 +146,8 @@ export async function runBatch(opts: RunBatchOptions): Promise<RunningBatch> {
     render: renderFn,
     db,
     paths: orchestratorPaths,
-    capturePoolSize: opts.capturePoolSize,
-    renderPoolSize: opts.renderPoolSize,
+    capturePoolSize: opts.capturePoolSize ?? envConcurrency('LOOM_CAPTURE_CONCURRENCY'),
+    renderPoolSize: opts.renderPoolSize ?? envConcurrency('LOOM_RENDER_CONCURRENCY'),
   });
 
   const batchInput: BatchInput = {

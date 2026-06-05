@@ -69,13 +69,25 @@ const GOTO_LOAD_BUDGET_MS = 25_000;
 // This budget is bounded so chatty pages (long-poll sockets, marketing
 // pixels) can't pin us forever, but it's big enough that heavy
 // React/Next.js sites finish their hydration round.
-const NETWORK_IDLE_BUDGET_MS = 12_000;
+//
+// Trimmed 12s → 6s: marketing pages with persistent connections (chat
+// widgets, analytics long-polls) almost never reach true networkidle, so
+// the old budget was burned in full on most leads. 6s still covers the
+// hydration round for heavy React/Next sites; the stability poll below is
+// the real backstop for late-injected content. This is per-lead real-time
+// in recording mode, so it directly reduces batch wall-clock.
+const NETWORK_IDLE_BUDGET_MS = 6_000;
 // Post-idle settle. Gives hydrated JS, lazy-loaded above-the-fold images,
 // late-arriving web fonts, and any animation-on-load (hero fades, etc.)
 // time to finish rendering before driveScroll starts capturing useful
 // frames. The output trim drops this prefix entirely so a long settle
 // only costs wall time, never seconds of output footage.
-const SETTLE_MS = 5_000;
+//
+// Trimmed 5s → 2.5s: by the time we reach here we've already waited for
+// networkidle + fonts-ready + layout stability, so most above-the-fold
+// work is done. 2.5s covers residual hero fades without paying 5s of pure
+// wall time on every lead.
+const SETTLE_MS = 2_500;
 // Cap on `document.fonts.ready` so a site with a broken font CDN can't
 // stall the capture. Most pages resolve this in 100-500ms.
 const FONTS_READY_BUDGET_MS = 4_000;
@@ -85,7 +97,12 @@ const FONTS_READY_BUDGET_MS = 4_000;
 // once it hasn't changed for STABILITY_REQUIRED_MS. Capped at
 // STABILITY_MAX_WAIT_MS so a site with infinite scroll / live-updating
 // content can't pin us forever.
-const STABILITY_MAX_WAIT_MS = 15_000;
+//
+// Trimmed 15s → 8s: the cap only bites on pages that never stabilize
+// (infinite scroll, live tickers), where waiting longer wouldn't help
+// anyway — they hit STABILITY_REQUIRED_MS or the cap regardless. Pages
+// that do settle exit early via STABILITY_REQUIRED_MS and are unaffected.
+const STABILITY_MAX_WAIT_MS = 8_000;
 const STABILITY_REQUIRED_MS = 2_500;
 const STABILITY_POLL_MS = 500;
 // Bounded budget for the cookie-banner click sweep — bounded per selector,
@@ -353,6 +370,14 @@ async function ensureBrowser(): Promise<Browser> {
       // settle window instead of mid-recording.
       '--disable-features=LazyImageLoading,LazyFrameLoading',
     ];
+    // Container-only hardening (set LOOM_CONTAINER=1 in the Docker image).
+    // Headless Chrome in a Linux container needs --no-sandbox (no user
+    // namespace) and --disable-dev-shm-usage (the default 64MB /dev/shm
+    // OOM-crashes the renderer on heavy pages). Left off on macOS dev where
+    // the sandbox works and shm is ample.
+    if (process.env.LOOM_CONTAINER === '1') {
+      launchArgs.push('--no-sandbox', '--disable-dev-shm-usage');
+    }
     // Prefer system Chrome over Playwright's bundled Chromium for one
     // critical reason: Chromium ships without the proprietary codec set
     // (H.264 / HEVC / AAC) that real Chrome includes. The vast majority
