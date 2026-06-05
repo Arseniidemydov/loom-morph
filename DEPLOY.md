@@ -78,10 +78,33 @@ matters to you.
 | `LOOM_CAPTURE_CONCURRENCY` | 8               | Concurrent page captures/recordings |
 | `LOOM_RENDER_CONCURRENCY`  | 6               | Concurrent ffmpeg encodes |
 | `LOOM_CONTAINER`           | 1 (set in image)| Enables container Chrome flags (`--no-sandbox`, `--disable-dev-shm-usage`) |
+| `LOOM_DATA_ROOT`           | (unset)         | Relocate ALL state (SQLite, uploads, tmp, output) under one dir. Set this to a single mounted disk on hosts that allow only one volume (e.g. Render). |
 | `PORT`                     | 3000            | HTTP port |
 
 Leaving the concurrency vars unset falls back to laptop-safe defaults
 (capture 5, render `min(cpus−1, 5)`).
+
+## Render (one-disk model)
+
+Render attaches a single **Persistent Disk** per service at one mount path, so
+point all state there with `LOOM_DATA_ROOT` (not the two separate `/app/data`
++ `/app/output` volumes used by `docker run`).
+
+1. Push this branch and connect the repo in Render: **New → Web Service**,
+   Runtime **Docker** (it reads the `Dockerfile`).
+2. Pick an instance with enough CPU/RAM (see the sizing table above — e.g. a
+   16 vCPU / 32 GB plan).
+3. Add a **Persistent Disk**, mount path `/data` (any size for your video
+   volume, e.g. 20–50 GB).
+4. Set environment variables:
+   - `LOOM_DATA_ROOT=/data`
+   - `LOOM_CAPTURE_CONCURRENCY` / `LOOM_RENDER_CONCURRENCY` sized to the plan
+   - (`LOOM_CONTAINER=1` is already baked into the image)
+5. Deploy. Your batches, DB, and rendered videos now all live on the disk and
+   survive redeploys.
+
+Note: a service with a Persistent Disk runs a single instance (no horizontal
+scaling, no zero-downtime deploys) — which is exactly the single-VM model here.
 
 ## Note on recording quality in containers
 

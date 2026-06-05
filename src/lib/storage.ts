@@ -25,7 +25,12 @@ export interface PathHelpers {
 }
 
 export function createPaths(opts: { root?: string } = {}): PathHelpers {
-  const root = opts.root ?? process.cwd();
+  // Precedence: explicit opts.root (tests, callers that pin a dir) >
+  // LOOM_DATA_ROOT env (deployments that point all state — SQLite, uploads,
+  // tmp, output — at a single mounted disk; e.g. Render's one-disk-per-service
+  // model) > process.cwd() (local dev default). One knob relocates everything,
+  // so every caller stays consistent without threading dataRoot through.
+  const root = opts.root ?? process.env.LOOM_DATA_ROOT ?? process.cwd();
   return {
     root,
     upload: (batchId, name) => path.join(root, 'uploads', batchId, name),
